@@ -1,0 +1,7 @@
+servers.json
+config.json
+releases/
+.idea
+test.go
+app.log
+vendor
