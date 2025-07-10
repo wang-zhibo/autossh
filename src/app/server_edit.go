@@ -4,8 +4,10 @@ import (
 	"autossh/src/utils"
 	"fmt"
 	"io"
+	"os"
 	"reflect"
 	"strconv"
+	"strings"
 )
 
 // 编辑
@@ -31,31 +33,52 @@ func deftVal(val string) string {
 func (server *Server) scanVal(fieldName string) (err error) {
 	elem := reflect.ValueOf(server).Elem()
 	field := elem.FieldByName(fieldName)
-	switch field.Type().String() {
-	case "int":
-		utils.Info(fieldName + deftVal(strconv.FormatInt(field.Int(), 10)) + ":")
-		var ipt int
-		if _, err = fmt.Scanln(&ipt); err == nil {
-			field.SetInt(int64(ipt))
+	for {
+		switch field.Type().String() {
+		case "int":
+			utils.Logln(fieldName + deftVal(strconv.FormatInt(field.Int(), 10)) + ":")
+			var ipt string
+			if _, err = fmt.Scanln(&ipt); err == nil {
+				ipt = strings.TrimSpace(ipt)
+				if ipt == "q" || ipt == "exit" {
+					os.Exit(0)
+				}
+				if ipt == "" {
+					return nil // 回车跳过
+				}
+				val, convErr := strconv.Atoi(ipt)
+				if convErr != nil {
+					utils.Error("请输入有效数字或回车跳过。")
+					continue
+				}
+				field.SetInt(int64(val))
+			}
+		case "string":
+			utils.Logln(fieldName + deftVal(field.String()) + ":")
+			var ipt string
+			if _, err = fmt.Scanln(&ipt); err == nil {
+				ipt = strings.TrimSpace(ipt)
+				if ipt == "q" || ipt == "exit" {
+					os.Exit(0)
+				}
+				if ipt == "" {
+					return nil // 回车跳过
+				}
+				field.SetString(ipt)
+			}
 		}
-	case "string":
-		utils.Info(fieldName + deftVal(field.String()) + ":")
-		var ipt string
-		if _, err = fmt.Scanln(&ipt); err == nil {
-			field.SetString(ipt)
+
+		if err != nil {
+			if err == io.EOF {
+				return err
+			}
+
+			// 允许输入空行
+			if err.Error() == "unexpected newline" {
+				return nil
+			}
 		}
+		break
 	}
-
-	if err != nil {
-		if err == io.EOF {
-			return err
-		}
-
-		// 允许输入空行
-		if err.Error() == "unexpected newline" {
-			return nil
-		}
-	}
-
 	return nil
 }

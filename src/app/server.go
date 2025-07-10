@@ -61,7 +61,6 @@ func (server *Server) MergeOptions(options map[string]interface{}, overwrite boo
 				server.Options[k] = v
 			}
 		}
-
 	}
 }
 
@@ -79,11 +78,21 @@ func (server *Server) FormatPrint(flag string, ShowDetail bool) string {
 	}
 }
 
+// 获取连接超时时间
+func (server *Server) getConnectTimeout() time.Duration {
+	if val, ok := server.Options["ConnectTimeout"]; ok && val != nil {
+		if timeout, ok := val.(float64); ok {
+			return time.Duration(timeout) * time.Second
+		}
+	}
+	return 30 * time.Second // 默认30秒超时
+}
+
 // 生成SSH Client
 func (server *Server) GetSshClient() (*ssh.Client, error) {
 	auth, err := parseAuthMethods(server)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("解析认证方法失败: %w", err)
 	}
 
 	config := &ssh.ClientConfig{
@@ -92,6 +101,7 @@ func (server *Server) GetSshClient() (*ssh.Client, error) {
 		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 			return nil
 		},
+		Timeout: server.getConnectTimeout(),
 	}
 
 	// 默认端口为22
@@ -122,20 +132,20 @@ func (server *Server) proxySshClient(p *Proxy, sshServerAddr string, sshConfig *
 
 		dialer, err = proxy.SOCKS5("tcp", p.Server+":"+strconv.Itoa(p.Port), &auth, proxy.Direct)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("创建SOCKS5代理失败: %w", err)
 		}
 	default:
-		return nil, errors.New(fmt.Sprintf("unknown proxy type: %s", p.Type))
+		return nil, fmt.Errorf("不支持的代理类型: %s", p.Type)
 	}
 
 	conn, err := dialer.Dial("tcp", sshServerAddr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("通过代理连接失败: %w", err)
 	}
 
 	c, chans, reqs, err := ssh.NewClientConn(conn, sshServerAddr, sshConfig)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("创建SSH客户端连接失败: %w", err)
 	}
 
 	return ssh.NewClient(c, chans, reqs), nil
@@ -144,36 +154,51 @@ func (server *Server) proxySshClient(p *Proxy, sshServerAddr string, sshConfig *
 // 生成Sftp Client
 func (server *Server) GetSftpClient() (*sftp.Client, error) {
 	sshClient, err := server.GetSshClient()
-	if err == nil {
-		return sftp.NewClient(sshClient)
-	} else {
+	if err != nil {
 		return nil, err
 	}
+	
+	sftpClient, err := sftp.NewClient(sshClient)
+	if err != nil {
+		sshClient.Close()
+		return nil, fmt.Errorf("创建SFTP客户端失败: %w", err)
+	}
+	
+	return sftpClient, nil
 }
 
 // 执行远程连接
 func (server *Server) Connect() error {
+	utils.Logln(fmt.Sprintf("正在连接到服务器: %s@%s:%d", server.User, server.Ip, server.Port))
+	
 	client, err := server.GetSshClient()
 	if err != nil {
-		if utils.ErrorAssert(err, "ssh: unable to authenticate") {
-			return errors.New("连接失败，请检查密码/密钥是否有误")
+		errorType := utils.GetErrorType(err)
+		switch errorType {
+		case "authentication_failed":
+			return errors.New("认证失败，请检查用户名和密码/密钥")
+		case "connection_refused":
+			return errors.New("连接被拒绝，请检查服务器地址和端口")
+		case "timeout":
+			return errors.New("连接超时，请检查网络连接")
+		case "network_error":
+			return errors.New("网络错误，请检查网络连接")
+		default:
+			return fmt.Errorf("SSH连接失败: %w", err)
 		}
-
-		return errors.New("ssh dial fail:" + err.Error())
 	}
 	defer client.Close()
 
 	session, err := client.NewSession()
 	if err != nil {
-		return errors.New("create session fail:" + err.Error())
+		return fmt.Errorf("创建SSH会话失败: %w", err)
 	}
-
 	defer session.Close()
 
 	fd := int(os.Stdin.Fd())
 	oldState, err := terminal.MakeRaw(fd)
 	if err != nil {
-		return errors.New("创建文件描述符出错:" + err.Error())
+		return fmt.Errorf("设置终端原始模式失败: %w", err)
 	}
 	defer terminal.Restore(fd, oldState)
 
@@ -182,7 +207,7 @@ func (server *Server) Connect() error {
 
 	err = server.stdIO(session)
 	if err != nil {
-		return err
+		return fmt.Errorf("设置标准IO失败: %w", err)
 	}
 
 	modes := ssh.TerminalModes{
@@ -197,21 +222,18 @@ func (server *Server) Connect() error {
 		termType = "xterm-256color"
 	}
 	if err := session.RequestPty(termType, server.termHeight, server.termWidth, modes); err != nil {
-		return errors.New("创建终端出错:" + err.Error())
+		return fmt.Errorf("请求PTY失败: %w", err)
 	}
 
 	server.listenWindowChange(session, fd)
 
+	utils.Logln("SSH连接已建立")
 	err = session.Shell()
 	if err != nil {
-		return errors.New("执行Shell出错:" + err.Error())
+		return fmt.Errorf("启动Shell失败: %w", err)
 	}
 
 	_ = session.Wait()
-	//if err != nil {
-	//	return errors.New("执行Wait出错:" + err.Error())
-	//}
-
 	return nil
 }
 
@@ -223,7 +245,7 @@ func (server *Server) stdIO(session *ssh.Session) error {
 	if server.Log.Enable {
 		ch, err := session.StdoutPipe()
 		if err != nil {
-			return err
+			return fmt.Errorf("获取标准输出管道失败: %w", err)
 		}
 
 		go func() {
@@ -234,23 +256,30 @@ func (server *Server) stdIO(session *ssh.Session) error {
 			case LogModeCover:
 			}
 
-			f, err := os.OpenFile(server.formatLogFilename(server.Log.Filename), flag, 0644)
+			logFile := server.formatLogFilename(server.Log.Filename)
+			f, err := os.OpenFile(logFile, flag, 0644)
 			if err != nil {
-				utils.Logger.Error("Open file fail ", err)
+				utils.Logln(fmt.Sprintf("打开日志文件失败: %v", err))
 				return
 			}
+			defer f.Close()
 
+			utils.Logln(fmt.Sprintf("开始记录会话日志到: %s", logFile))
+
+			buff := make([]byte, 4096)
 			for {
-				buff := [4096]byte{}
-				n, _ := ch.Read(buff[:])
+				n, err := ch.Read(buff)
 				if n > 0 {
 					if _, err := f.Write(buff[:n]); err != nil {
-						utils.Logger.Error("Write file buffer fail ", err)
+						utils.Logln(fmt.Sprintf("写入日志文件失败: %v", err))
 					}
 
 					if _, err := os.Stdout.Write(buff[:n]); err != nil {
-						utils.Logger.Error("Write stdout buffer fail ", err)
+						utils.Logln(fmt.Sprintf("写入标准输出失败: %v", err))
 					}
+				}
+				if err != nil {
+					break
 				}
 			}
 		}()
@@ -283,27 +312,27 @@ func (server *Server) formatLogFilename(filename string) string {
 
 // 解析鉴权方式
 func parseAuthMethods(server *Server) ([]ssh.AuthMethod, error) {
-	var sshs []ssh.AuthMethod
+	var authMethods []ssh.AuthMethod
 
 	switch strings.ToLower(server.Method) {
 	case "password":
-		sshs = append(sshs, ssh.Password(server.Password))
-		break
+		if server.Password == "" {
+			return nil, errors.New("密码认证模式下密码不能为空")
+		}
+		authMethods = append(authMethods, ssh.Password(server.Password))
 
 	case "key":
 		method, err := pemKey(server)
 		if err != nil {
 			return nil, err
 		}
-		sshs = append(sshs, method)
-		break
+		authMethods = append(authMethods, method)
 
-		// 默认以password方式
 	default:
-		sshs = append(sshs, ssh.Password(server.Password))
+		return nil, fmt.Errorf("不支持的认证方法: %s", server.Method)
 	}
 
-	return sshs, nil
+	return authMethods, nil
 }
 
 // 解析密钥
@@ -315,7 +344,7 @@ func pemKey(server *Server) (ssh.AuthMethod, error) {
 
 	pemBytes, err := ioutil.ReadFile(server.Key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取密钥文件失败: %w", err)
 	}
 
 	var signer ssh.Signer
@@ -326,7 +355,7 @@ func pemKey(server *Server) (ssh.AuthMethod, error) {
 	}
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("解析密钥失败: %w", err)
 	}
 
 	return ssh.PublicKeys(signer), nil
@@ -344,11 +373,14 @@ func (server *Server) startKeepAliveLoop(session *ssh.Session) chan struct{} {
 				if val, ok := server.Options["ServerAliveInterval"]; ok && val != nil {
 					_, err := session.SendRequest("keepalive@bbr", true, nil)
 					if err != nil {
-						utils.Logger.Category("server").Error("keepAliveLoop fail", err)
+						utils.Error("发送心跳包失败: %v", err)
 					}
 
-					t := time.Duration(server.Options["ServerAliveInterval"].(float64))
-					time.Sleep(time.Second * t)
+					if interval, ok := val.(float64); ok {
+						time.Sleep(time.Duration(interval) * time.Second)
+					} else {
+						time.Sleep(60 * time.Second) // 默认60秒
+					}
 				} else {
 					return
 				}
@@ -367,12 +399,11 @@ func (server *Server) listenWindowChange(session *ssh.Session, fd int) {
 		signal.Notify(sigwinchCh, syscall.SIGWINCH)
 		termWidth, termHeight, err := terminal.GetSize(fd)
 		if err != nil {
-			utils.Logger.Error(err)
+			utils.Error("获取终端大小失败: %v", err)
 		}
 
 		for {
 			select {
-			// 阻塞读取
 			case sigwinch := <-sigwinchCh:
 				if sigwinch == nil {
 					return
@@ -385,9 +416,9 @@ func (server *Server) listenWindowChange(session *ssh.Session, fd int) {
 				}
 
 				// 更新远端大小
-				session.WindowChange(currTermHeight, currTermWidth)
+				err = session.WindowChange(currTermHeight, currTermWidth)
 				if err != nil {
-					utils.Logger.Error(err)
+					utils.Error("更新终端窗口大小失败: %v", err)
 					continue
 				}
 

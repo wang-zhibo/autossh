@@ -27,9 +27,10 @@ function build() {
 }
 
 # OS X Mac
-build darwin amd64 macOS
+# build darwin amd64 macOS
+build darwin arm64 macOS
 
 # Linux
-build linux amd64 linux
-build linux 386 linux
-build linux arm linux
+# build linux amd64 linux
+# build linux 386 linux
+# build linux arm linux

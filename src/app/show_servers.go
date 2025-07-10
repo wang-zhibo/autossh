@@ -13,12 +13,10 @@ func showServers(configFile string) {
 		return
 	}
 
-	// 清屏
-	_ = utils.Clear()
-
-	show(cfg)
-
 	for {
+		_ = utils.Clear()
+		show(cfg)
+		utils.Logln("请输入序号、别名或命令（如 add/edit/remove/exit），输入 q 或 exit 退出：")
 		loop, clear, reload := scanInput(cfg)
 		if !loop {
 			break
@@ -31,15 +29,13 @@ func showServers(configFile string) {
 		if clear {
 			_ = utils.Clear()
 		}
-
-		show(cfg)
 	}
 }
 
 // 显示服务
 func show(cfg *Config) {
 	maxlen := separatorLength(*cfg)
-	utils.Infoln(utils.FormatSeparator(" 欢迎使用 Auto SSH ", "=", maxlen))
+	utils.Logln(utils.FormatSeparator(" 欢迎使用 Auto SSH ", "=", maxlen))
     asciiArt := "城南爸爸 \n"+
         "  ___   _      ___   _      ___   _      ___   _      ___   _ \n" +
         " [(_)] |=|    [(_)] |=|    [(_)] |=|    [(_)] |=|    [(_)] |=| \n" +
@@ -69,7 +65,7 @@ func show(cfg *Config) {
 			collapseNotice = "[" + group.Prefix + " ↑]"
 		}
 
-		utils.Infoln(utils.FormatSeparator(" "+group.GroupName+" "+collapseNotice+" ", "_", maxlen))
+		utils.Logln(utils.FormatSeparator(" "+group.GroupName+" "+collapseNotice+" ", "_", maxlen))
 		if !group.Collapse {
 			for i, server := range group.Servers {
 				utils.Logln(server.FormatPrint(group.Prefix+strconv.Itoa(i+1), cfg.ShowDetail))
@@ -77,12 +73,12 @@ func show(cfg *Config) {
 		}
 	}
 
-	utils.Infoln(utils.FormatSeparator("", "=", maxlen))
+	utils.Logln(utils.FormatSeparator("", "=", maxlen))
 
 	showMenu()
 
-	utils.Infoln(utils.FormatSeparator("", "=", maxlen))
-	utils.Info("请输入序号或操作: ")
+	utils.Logln(utils.FormatSeparator("", "=", maxlen))
+	utils.Logln("请输入序号或操作: ")
 }
 
 // 计算分隔符长度

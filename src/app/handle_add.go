@@ -4,6 +4,7 @@ import (
 	"autossh/src/utils"
 	"fmt"
 	"io"
+	"strings"
 )
 
 func handleAdd(cfg *Config, _ []string) error {
@@ -11,12 +12,18 @@ func handleAdd(cfg *Config, _ []string) error {
 	for i := range cfg.Groups {
 		group := cfg.Groups[i]
 		groups[group.Prefix] = group
-		utils.Info("["+group.Prefix+"]"+group.GroupName, "\t")
+		utils.Logln("["+group.Prefix+"]"+group.GroupName, "\t")
 	}
-	utils.Infoln("[其他值]默认组")
-	utils.Info("请输入要插入的组：")
+	utils.Logln("[其他值]默认组")
+	utils.Logln("请输入要插入的组（输入 q 或 exit 取消）：")
 	g := ""
 	if _, err := fmt.Scanln(&g); err == io.EOF {
+		return nil
+	}
+	g = strings.TrimSpace(g)
+	if g == "q" || g == "exit" {
+		utils.Logln("已取消添加服务器。按回车返回主菜单。")
+		fmt.Scanln()
 		return nil
 	}
 
@@ -37,5 +44,12 @@ func handleAdd(cfg *Config, _ []string) error {
 		cfg.Servers = append(cfg.Servers, &server)
 	}
 
-	return cfg.saveConfig(true)
+	err := cfg.saveConfig(true)
+	if err != nil {
+		utils.Error("保存配置失败: ", err)
+	} else {
+		utils.Logln("服务器添加成功！按回车返回主菜单。")
+		fmt.Scanln()
+	}
+	return nil
 }
