@@ -80,7 +80,7 @@ func show(cfg *Config) {
 		if group.Collapse {
 			collapseNotice = "📁 [" + group.Prefix + " 展开]"
 		} else {
-			collapseNotice = "📂 [" + group.Prefix + " 收起]"
+			collapseNotice = "📂 [" + group.Prefix + " 分组]"
 		}
 
 		groupTitle := "🏷️  " + group.GroupName + " " + collapseNotice
@@ -247,8 +247,8 @@ func separatorLength(cfg Config) int {
 			maxlength = width
 		}
 
-		// 检查收起状态的标题
-		groupTitleCollapsed := "🏷️  " + group.GroupName + " 📂 [" + group.Prefix + " 收起]"
+		// 检查分组状态的标题
+		groupTitleCollapsed := "🏷️  " + group.GroupName + " 📂 [" + group.Prefix + " 分组]"
 		width = utils.ZhLen(groupTitleCollapsed) + 4
 		if width > maxlength {
 			maxlength = width
