@@ -28,7 +28,7 @@ func ZhLen(str string) int {
 			// 中日韩字符宽度为2
 			length += 2
 		} else if isWideEmoji(r) {
-			// 宽emoji字符宽度为2，但对于某些终端兼容性问题，使用1.5倍宽度
+			// 宽emoji字符宽度为2
 			length += 2
 			// 检查是否有变体选择器跟随
 			if i+1 < len(runes) && isVariationSelector(runes[i+1]) {
@@ -50,11 +50,10 @@ func ZhLen(str string) int {
 }
 
 // 判断是否为宽emoji字符 - 更精确的检测
-// 判断是否为宽emoji字符 - 更精确的检测
 func isWideEmoji(r rune) bool {
 	// 基本emoji范围
 	if (r >= 0x1F600 && r <= 0x1F64F) || // 表情符号
-		(r >= 0x1F300 && r <= 0x1F5FF) || // 杂项符号和象形文字（包含👋 0x1F44B）
+		(r >= 0x1F300 && r <= 0x1F5FF) || // 杂项符号和象形文字（包含👋）
 		(r >= 0x1F680 && r <= 0x1F6FF) || // 交通和地图符号
 		(r >= 0x1F1E6 && r <= 0x1F1FF) || // 区域指示符号
 		(r >= 0x2600 && r <= 0x26FF) ||   // 杂项符号
@@ -71,8 +70,6 @@ func isWideEmoji(r rune) bool {
 	case 0x23F3: // ⏳ (沙漏)
 		return true
 	case 0x2705: // ✅ (白色重勾号)
-		return true
-	case 0x1F44B: // 👋 (挥手) - 明确添加确保识别
 		return true
 	default:
 		return false
