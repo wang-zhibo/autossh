@@ -99,7 +99,7 @@ func (server *Server) MergeOptions(options map[string]interface{}, overwrite boo
 	}
 }
 
-// 格式化输出，用于打印 - 优化字符串拼接
+// 格式化输出，用于打印 - 修复版本
 func (server *Server) FormatPrint(flag string, ShowDetail bool) string {
 	var builder strings.Builder
 	builder.WriteString(" [")
@@ -109,7 +109,7 @@ func (server *Server) FormatPrint(flag string, ShowDetail bool) string {
 		builder.WriteString("|")
 		builder.WriteString(server.Alias)
 	}
-	builder.WriteString("]\t")
+	builder.WriteString("]    ") // 替换制表符为固定空格
 	builder.WriteString(server.Name)
 
 	if ShowDetail {
@@ -315,17 +315,9 @@ func (server *Server) Connect() error {
 
 	server.listenWindowChange(session, fd)
 
-	// 连接成功提示 - 使用单次输出确保顺序
-	welcomeText := fmt.Sprintf("🎯 欢迎来到 %s (%s@%s:%d)", server.Name, server.User, server.Ip, server.Port)
-	welcomeWidth := utils.ZhLen(welcomeText)
-	
-	// 构建完整的欢迎信息块，一次性输出
-	welcomeBlock := fmt.Sprintf("✅ SSH连接已建立，正在启动Shell...\n%s\n%s\n", 
-		welcomeText, 
-		strings.Repeat("━", welcomeWidth))
-	
-	fmt.Print(welcomeBlock)
-	os.Stdout.Sync()
+	// 连接成功提示 - 简化版本
+	fmt.Println("✅ SSH连接已建立，正在启动Shell...")
+	fmt.Println()
 
 	err = session.Shell()
 	if err != nil {
@@ -508,13 +500,17 @@ func (server *Server) listenWindowChange(session *ssh.Session, fd int) {
 					return
 				}
 				currTermWidth, currTermHeight, err := terminal.GetSize(fd)
+				if err != nil {
+					utils.Error("获取当前终端大小失败: %v", err)
+					continue
+				}
 
 				// 判断一下窗口尺寸是否有改变
 				if currTermHeight == termHeight && currTermWidth == termWidth {
 					continue
 				}
 
-				// 更新远端大小
+				// 更新远端大小 - 修复参数顺序：WindowChange(height, width)
 				err = session.WindowChange(currTermHeight, currTermWidth)
 				if err != nil {
 					utils.Error("更新终端窗口大小失败: %v", err)

@@ -49,19 +49,22 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 			stopTimer := utils.StartTimer("server_connect")
 			server := cfg.serverIndex[cmd].server
 
-			// 计算最大宽度以确保对齐
+			// 收集所有要显示的文本
 			serverName := server.Name
 			serverAddr := fmt.Sprintf("%s@%s:%d", server.User, server.Ip, server.Port)
+			
+			nameText := "🚀 正在连接到服务器: " + serverName
+			addrText := "📍 地址: " + serverAddr
+			waitText := "⏳ 请稍候..."
+			
+			// 计算最大宽度
 			maxWidth := 60
-
-			// 确保有足够的宽度容纳内容
-			nameWidth := utils.ZhLen(serverName)
-			addrWidth := utils.ZhLen(serverAddr)
-			if nameWidth+20 > maxWidth {
-				maxWidth = nameWidth + 20
-			}
-			if addrWidth+15 > maxWidth {
-				maxWidth = addrWidth + 15
+			texts := []string{nameText, addrText, waitText}
+			for _, text := range texts {
+				width := utils.ZhLen(text) + 8 // 加上边框和空格
+				if width > maxWidth {
+					maxWidth = width
+				}
 			}
 
 			// 美化连接提示
@@ -69,7 +72,6 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 			fmt.Println("╔" + strings.Repeat("═", maxWidth-2) + "╗")
 
 			// 服务器名称行
-			nameText := "🚀 正在连接到服务器: " + serverName
 			namePadding := maxWidth - utils.ZhLen(nameText) - 4
 			if namePadding < 0 {
 				namePadding = 0
@@ -77,7 +79,6 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 			fmt.Printf("║ %s%s ║\n", nameText, strings.Repeat(" ", namePadding))
 
 			// 地址行
-			addrText := "📍 地址: " + serverAddr
 			addrPadding := maxWidth - utils.ZhLen(addrText) - 4
 			if addrPadding < 0 {
 				addrPadding = 0
@@ -85,7 +86,6 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 			fmt.Printf("║ %s%s ║\n", addrText, strings.Repeat(" ", addrPadding))
 
 			// 等待行
-			waitText := "⏳ 请稍候..."
 			waitPadding := maxWidth - utils.ZhLen(waitText) - 4
 			if waitPadding < 0 {
 				waitPadding = 0
@@ -101,16 +101,25 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 			if err != nil {
 				// 美化错误提示
 				errorMsg := err.Error()
+				
+				failText := "❌ 连接失败"
+				errText := "📝 错误信息: " + errorMsg
+				tipText := "💡 请检查服务器配置和网络连接"
+				
+				// 计算错误提示的最大宽度
 				errorWidth := 60
-				if utils.ZhLen(errorMsg)+20 > errorWidth {
-					errorWidth = utils.ZhLen(errorMsg) + 20
+				errorTexts := []string{failText, errText, tipText}
+				for _, text := range errorTexts {
+					width := utils.ZhLen(text) + 8
+					if width > errorWidth {
+						errorWidth = width
+					}
 				}
 
 				fmt.Println()
 				fmt.Println("╔" + strings.Repeat("═", errorWidth-2) + "╗")
 
 				// 错误标题
-				failText := "❌ 连接失败"
 				failPadding := errorWidth - utils.ZhLen(failText) - 4
 				if failPadding < 0 {
 					failPadding = 0
@@ -118,7 +127,6 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 				fmt.Printf("║ %s%s ║\n", failText, strings.Repeat(" ", failPadding))
 
 				// 错误信息
-				errText := "📝 错误信息: " + errorMsg
 				errPadding := errorWidth - utils.ZhLen(errText) - 4
 				if errPadding < 0 {
 					errPadding = 0
@@ -126,7 +134,6 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 				fmt.Printf("║ %s%s ║\n", errText, strings.Repeat(" ", errPadding))
 
 				// 提示信息
-				tipText := "💡 请检查服务器配置和网络连接"
 				tipPadding := errorWidth - utils.ZhLen(tipText) - 4
 				if tipPadding < 0 {
 					tipPadding = 0
@@ -139,17 +146,31 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 				fmt.Scanln()
 				return false, true, false
 			} else {
-				// 美化断开提示
+				// 美化断开提示 - 彻底修复对齐问题
+				displayName := server.Name
+				if server.Alias != "" {
+					displayName = server.Alias
+				}
+				
+				// 收集所有要显示的文本
+				endText := "✅ SSH会话已结束"
+				srvText := "🏠 服务器: " + displayName
+				byeText := "👋 感谢使用 AutoSSH，再见！"
+				
+				// 计算最大宽度
 				exitWidth := 60
-				if utils.ZhLen(serverName)+15 > exitWidth {
-					exitWidth = utils.ZhLen(serverName) + 15
+				exitTexts := []string{endText, srvText, byeText}
+				for _, text := range exitTexts {
+					width := utils.ZhLen(text) + 8
+					if width > exitWidth {
+						exitWidth = width
+					}
 				}
 
 				fmt.Println()
 				fmt.Println("╔" + strings.Repeat("═", exitWidth-2) + "╗")
 
 				// 结束标题
-				endText := "✅ SSH会话已结束"
 				endPadding := exitWidth - utils.ZhLen(endText) - 4
 				if endPadding < 0 {
 					endPadding = 0
@@ -157,7 +178,6 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 				fmt.Printf("║ %s%s ║\n", endText, strings.Repeat(" ", endPadding))
 
 				// 服务器名称
-				srvText := "🏠 服务器: " + serverName
 				srvPadding := exitWidth - utils.ZhLen(srvText) - 4
 				if srvPadding < 0 {
 					srvPadding = 0
@@ -165,7 +185,6 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 				fmt.Printf("║ %s%s ║\n", srvText, strings.Repeat(" ", srvPadding))
 
 				// 感谢信息
-				byeText := "👋 感谢使用 AutoSSH，再见！"
 				byePadding := exitWidth - utils.ZhLen(byeText) - 4
 				if byePadding < 0 {
 					byePadding = 0
