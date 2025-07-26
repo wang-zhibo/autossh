@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
@@ -27,14 +28,19 @@ var levelNames = map[LogLevel]string{
 	ERROR: "ERROR",
 }
 
-// Logger 结构体
+// Logger 结构体 - 优化版本
 type Logger struct {
 	mu       sync.Mutex
 	file     *os.File
+	writer   *bufio.Writer
 	logger   *log.Logger
 	level    LogLevel
 	filename string
 	category string
+	
+	// 性能优化：批量写入
+	buffer   []string
+	lastFlush time.Time
 }
 
 var defaultLogger *Logger
@@ -44,11 +50,13 @@ func init() {
 	defaultLogger = NewLogger(logFile, INFO)
 }
 
-// NewLogger 创建新的日志记录器
+// NewLogger 创建新的日志记录器 - 优化版本
 func NewLogger(filename string, level LogLevel) *Logger {
 	logger := &Logger{
-		filename: filename,
-		level:    level,
+		filename:  filename,
+		level:     level,
+		buffer:    make([]string, 0, 100), // 预分配缓冲区
+		lastFlush: time.Now(),
 	}
 	
 	if err := logger.openFile(); err != nil {
@@ -56,10 +64,13 @@ func NewLogger(filename string, level LogLevel) *Logger {
 		logger.logger = log.New(os.Stdout, "", log.LstdFlags)
 	}
 	
+	// 启动定期刷新协程
+	go logger.flushRoutine()
+	
 	return logger
 }
 
-// openFile 打开日志文件
+// openFile 打开日志文件 - 优化版本
 func (l *Logger) openFile() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -76,11 +87,33 @@ func (l *Logger) openFile() error {
 	}
 	
 	l.file = file
-	l.logger = log.New(io.MultiWriter(os.Stdout, file), "", log.LstdFlags)
+	l.writer = bufio.NewWriterSize(file, 4096) // 使用缓冲写入
+	l.logger = log.New(io.MultiWriter(os.Stdout, l.writer), "", log.LstdFlags)
 	return nil
 }
 
-// log 内部日志方法
+// flushRoutine 定期刷新缓冲区
+func (l *Logger) flushRoutine() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	
+	for range ticker.C {
+		l.flush()
+	}
+}
+
+// flush 刷新缓冲区
+func (l *Logger) flush() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	
+	if l.writer != nil && time.Since(l.lastFlush) > 500*time.Millisecond {
+		l.writer.Flush()
+		l.lastFlush = time.Now()
+	}
+}
+
+// log 内部日志方法 - 优化版本
 func (l *Logger) log(level LogLevel, category string, format string, args ...interface{}) {
 	if level < l.level {
 		return
@@ -102,6 +135,12 @@ func (l *Logger) log(level LogLevel, category string, format string, args ...int
 	if l.logger != nil {
 		l.logger.Println(message)
 	}
+	
+	// 立即刷新错误级别的日志
+	if level >= ERROR && l.writer != nil {
+		l.writer.Flush()
+		l.lastFlush = time.Now()
+	}
 }
 
 // SetLevel 设置日志级别
@@ -115,6 +154,7 @@ func (l *Logger) SetLevel(level LogLevel) {
 func (l *Logger) Category(category string) *Logger {
 	return &Logger{
 		file:     l.file,
+		writer:   l.writer,
 		logger:   l.logger,
 		level:    l.level,
 		filename: l.filename,
@@ -142,10 +182,14 @@ func (l *Logger) Error(format string, args ...interface{}) {
 	l.log(ERROR, l.category, format, args...)
 }
 
-// Close 关闭日志文件
+// Close 关闭日志文件 - 优化版本
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	
+	if l.writer != nil {
+		l.writer.Flush()
+	}
 	
 	if l.file != nil {
 		return l.file.Close()

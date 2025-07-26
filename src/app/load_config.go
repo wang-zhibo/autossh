@@ -2,9 +2,12 @@ package app
 
 import (
 	"autossh/src/utils"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"sync"
+	"time"
 )
 
 // ConfigValidationError 配置验证错误
@@ -17,7 +20,18 @@ func (e ConfigValidationError) Error() string {
 	return fmt.Sprintf("配置验证失败 [%s]: %s", e.Field, e.Msg)
 }
 
-// loadConfig 加载配置文件
+var (
+	configCache = make(map[string]*configCacheEntry)
+	cacheMutex  sync.RWMutex
+)
+
+type configCacheEntry struct {
+	config   *Config
+	modTime  time.Time
+	lastUsed time.Time
+}
+
+// loadConfig 加载配置文件 - 优化版本
 func loadConfig(configFile string) (*Config, error) {
 	// 解析配置文件路径
 	configFile, err := utils.ParsePath(configFile)
@@ -30,20 +44,40 @@ func loadConfig(configFile string) (*Config, error) {
 		return nil, fmt.Errorf("配置文件不存在: %s", configFile)
 	}
 
-	// 读取配置文件
-	data, err := ioutil.ReadFile(configFile)
+	// 获取文件信息
+	fileInfo, err := ioutil.ReadFile(configFile)
 	if err != nil {
 		return nil, fmt.Errorf("读取配置文件失败: %w", err)
 	}
 
-	// 解析JSON
+	// 检查缓存
+	cacheMutex.RLock()
+	if entry, exists := configCache[configFile]; exists {
+		entry.lastUsed = time.Now()
+		cacheMutex.RUnlock()
+		
+		// 检查文件是否被修改
+		if !entry.config.needReload() {
+			utils.Logln("使用缓存的配置文件: %s", configFile)
+			return entry.config, nil
+		}
+	} else {
+		cacheMutex.RUnlock()
+	}
+
+	// 解析JSON - 使用更高效的解码器
 	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(fileInfo))
+	decoder.DisallowUnknownFields() // 严格模式，提高安全性
+	
+	if err := decoder.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件JSON失败: %w", err)
 	}
 
-	// 设置文件路径
+	// 设置文件路径和初始状态
 	cfg.file = configFile
+	cfg.lastModTime = time.Now()
+	cfg.isDirty = false
 
 	// 验证配置
 	if err := cfg.validate(); err != nil {
@@ -52,6 +86,23 @@ func loadConfig(configFile string) (*Config, error) {
 
 	// 创建服务器索引
 	cfg.createServerIndex()
+
+	// 更新缓存
+	cacheMutex.Lock()
+	configCache[configFile] = &configCacheEntry{
+		config:   &cfg,
+		modTime:  time.Now(),
+		lastUsed: time.Now(),
+	}
+	
+	// 清理过期缓存（保留最近10分钟使用的）
+	cleanupThreshold := time.Now().Add(-10 * time.Minute)
+	for path, entry := range configCache {
+		if entry.lastUsed.Before(cleanupThreshold) {
+			delete(configCache, path)
+		}
+	}
+	cacheMutex.Unlock()
 
 	utils.Logln("成功加载配置文件: %s", configFile)
 	return &cfg, nil

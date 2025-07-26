@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -22,6 +23,11 @@ type Config struct {
 	// 服务器map索引，可通过编号、别名快速定位到某一个服务器
 	serverIndex map[string]ServerIndex
 	file        string
+	
+	// 性能优化：添加缓存和锁
+	mu          sync.RWMutex
+	lastModTime time.Time
+	isDirty     bool
 }
 
 type Group struct {
@@ -123,24 +129,29 @@ func (cfg *Config) createServerIndex() {
 	}
 }
 
-// 保存配置文件
+// 保存配置文件 - 优化版本
 func (cfg *Config) saveConfig(backup bool) error {
+	cfg.mu.Lock()
+	defer cfg.mu.Unlock()
+	
+	// 如果配置没有变化，跳过保存
+	if !cfg.isDirty {
+		return nil
+	}
+	
 	// 验证配置
 	if err := cfg.validate(); err != nil {
 		return fmt.Errorf("配置验证失败: %w", err)
 	}
 
-	// 序列化配置
-	data, err := json.Marshal(cfg)
-	if err != nil {
+	// 使用更高效的JSON编码器
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetIndent("", "\t")
+	encoder.SetEscapeHTML(false)
+	
+	if err := encoder.Encode(cfg); err != nil {
 		return fmt.Errorf("序列化配置失败: %w", err)
-	}
-
-	// 格式化JSON
-	var out bytes.Buffer
-	err = json.Indent(&out, data, "", "\t")
-	if err != nil {
-		return fmt.Errorf("格式化JSON失败: %w", err)
 	}
 
 	// 创建备份
@@ -150,21 +161,53 @@ func (cfg *Config) saveConfig(backup bool) error {
 		}
 	}
 
-	// 写入临时文件
+	// 原子性写入
+	if err := cfg.atomicWrite(buf.Bytes()); err != nil {
+		return err
+	}
+
+	cfg.isDirty = false
+	cfg.lastModTime = time.Now()
+	utils.Logln("配置文件已保存: %s", cfg.file)
+	return nil
+}
+
+// 原子性写入文件
+func (cfg *Config) atomicWrite(data []byte) error {
 	tempFile := cfg.file + ".tmp"
-	if err := ioutil.WriteFile(tempFile, out.Bytes(), 0644); err != nil {
+	
+	// 写入临时文件
+	if err := ioutil.WriteFile(tempFile, data, 0644); err != nil {
 		return fmt.Errorf("写入临时文件失败: %w", err)
 	}
 
 	// 原子性地重命名文件
 	if err := os.Rename(tempFile, cfg.file); err != nil {
-		// 清理临时文件
-		os.Remove(tempFile)
+		os.Remove(tempFile) // 清理临时文件
 		return fmt.Errorf("保存配置文件失败: %w", err)
 	}
 
-	utils.Logln("配置文件已保存: %s", cfg.file)
 	return nil
+}
+
+// 标记配置为已修改
+func (cfg *Config) markDirty() {
+	cfg.mu.Lock()
+	defer cfg.mu.Unlock()
+	cfg.isDirty = true
+}
+
+// 检查配置文件是否需要重新加载
+func (cfg *Config) needReload() bool {
+	cfg.mu.RLock()
+	defer cfg.mu.RUnlock()
+	
+	info, err := os.Stat(cfg.file)
+	if err != nil {
+		return false
+	}
+	
+	return info.ModTime().After(cfg.lastModTime)
 }
 
 // 备份配置文件

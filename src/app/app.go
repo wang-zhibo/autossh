@@ -19,6 +19,7 @@ var (
 	upgrade bool
 	cp      bool
 	debug   bool
+	perf    bool // 性能监控标志
 )
 
 func init() {
@@ -37,6 +38,7 @@ func init() {
 	flag.BoolVar(&h, "help", false, "显示帮助信息")
 
 	flag.BoolVar(&debug, "debug", false, "启用调试模式")
+	flag.BoolVar(&perf, "perf", false, "启用性能监控")
 
 	flag.Usage = usage
 	flag.Parse()
@@ -61,7 +63,19 @@ func Run() {
 			utils.Error("程序发生严重错误: %v", r)
 			os.Exit(1)
 		}
+		
+		// 如果启用了性能监控，在程序结束时打印报告
+		if perf {
+			utils.PrintPerformanceMetrics()
+			utils.PrintMemoryUsage()
+		}
 	}()
+
+	// 性能监控：应用启动
+	var stopTimer func()
+	if perf {
+		stopTimer = utils.StartTimer("app_startup")
+	}
 
 	utils.Info("AutoSSH 启动中...")
 
@@ -74,6 +88,9 @@ func Run() {
 	} else if cp {
 		showCp(c)
 	} else {
+		if perf && stopTimer != nil {
+			stopTimer()
+		}
 		showServers(c)
 	}
 }
@@ -90,6 +107,7 @@ func usage() {
   -v, --version         显示版本信息
   -h, --help            显示帮助信息
   -debug                启用调试模式
+  -perf                 启用性能监控
 
 命令:
   upgrade               检查并下载最新版本
@@ -101,6 +119,7 @@ func usage() {
   autossh server1      连接到别名为server1的服务器
   autossh -c /path/to/config.json 使用指定配置文件
   autossh -debug       启用调试模式
+  autossh -perf        启用性能监控
 
 配置文件格式请参考 config.example.json
 `)

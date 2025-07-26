@@ -14,9 +14,43 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
+
+// 连接池管理
+var (
+	connectionPool = make(map[string]*ssh.Client)
+	poolMutex      sync.RWMutex
+	poolCleanup    = time.NewTicker(5 * time.Minute)
+)
+
+func init() {
+	// 启动连接池清理协程
+	go func() {
+		for range poolCleanup.C {
+			cleanupConnectionPool()
+		}
+	}()
+}
+
+// 清理连接池中的无效连接
+func cleanupConnectionPool() {
+	poolMutex.Lock()
+	defer poolMutex.Unlock()
+	
+	for key, client := range connectionPool {
+		// 测试连接是否还有效
+		session, err := client.NewSession()
+		if err != nil {
+			client.Close()
+			delete(connectionPool, key)
+			continue
+		}
+		session.Close()
+	}
+}
 
 type Server struct {
 	Name     string                 `json:"name"`
@@ -64,18 +98,28 @@ func (server *Server) MergeOptions(options map[string]interface{}, overwrite boo
 	}
 }
 
-// 格式化输出，用于打印
+// 格式化输出，用于打印 - 优化字符串拼接
 func (server *Server) FormatPrint(flag string, ShowDetail bool) string {
-	alias := ""
+	var builder strings.Builder
+	builder.WriteString(" [")
+	builder.WriteString(flag)
+	
 	if server.Alias != "" {
-		alias = "|" + server.Alias
+		builder.WriteString("|")
+		builder.WriteString(server.Alias)
 	}
-
+	builder.WriteString("]\t")
+	builder.WriteString(server.Name)
+	
 	if ShowDetail {
-		return " [" + flag + alias + "]" + "\t" + server.Name + " [" + server.User + "@" + server.Ip + "]"
-	} else {
-		return " [" + flag + alias + "]" + "\t" + server.Name
+		builder.WriteString(" [")
+		builder.WriteString(server.User)
+		builder.WriteString("@")
+		builder.WriteString(server.Ip)
+		builder.WriteString("]")
 	}
+	
+	return builder.String()
 }
 
 // 获取连接超时时间
@@ -88,8 +132,37 @@ func (server *Server) getConnectTimeout() time.Duration {
 	return 30 * time.Second // 默认30秒超时
 }
 
-// 生成SSH Client
+// 生成连接键用于连接池
+func (server *Server) getConnectionKey() string {
+	return fmt.Sprintf("%s@%s:%d", server.User, server.Ip, server.Port)
+}
+
+// 从连接池获取或创建SSH Client - 优化版本
 func (server *Server) GetSshClient() (*ssh.Client, error) {
+	connectionKey := server.getConnectionKey()
+	
+	// 尝试从连接池获取现有连接
+	poolMutex.RLock()
+	if client, exists := connectionPool[connectionKey]; exists {
+		poolMutex.RUnlock()
+		
+		// 测试连接是否有效
+		session, err := client.NewSession()
+		if err == nil {
+			session.Close()
+			return client, nil
+		}
+		
+		// 连接无效，从池中移除
+		poolMutex.Lock()
+		delete(connectionPool, connectionKey)
+		client.Close()
+		poolMutex.Unlock()
+	} else {
+		poolMutex.RUnlock()
+	}
+	
+	// 创建新连接
 	auth, err := parseAuthMethods(server)
 	if err != nil {
 		return nil, fmt.Errorf("解析认证方法失败: %w", err)
@@ -111,11 +184,23 @@ func (server *Server) GetSshClient() (*ssh.Client, error) {
 
 	addr := server.Ip + ":" + strconv.Itoa(server.Port)
 
+	var client *ssh.Client
 	if server.group != nil && server.group.Proxy != nil {
-		return server.proxySshClient(server.group.Proxy, addr, config)
+		client, err = server.proxySshClient(server.group.Proxy, addr, config)
 	} else {
-		return ssh.Dial("tcp", addr, config)
+		client, err = ssh.Dial("tcp", addr, config)
 	}
+	
+	if err != nil {
+		return nil, err
+	}
+	
+	// 将新连接添加到池中
+	poolMutex.Lock()
+	connectionPool[connectionKey] = client
+	poolMutex.Unlock()
+	
+	return client, nil
 }
 
 func (server *Server) proxySshClient(p *Proxy, sshServerAddr string, sshConfig *ssh.ClientConfig) (client *ssh.Client, err error) {
