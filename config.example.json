@@ -1,45 +1,221 @@
 {
   "show_detail": true,
   "options": {
-    "ServerAliveInterval": 30
+    "ServerAliveInterval": 30,
+    "ConnectTimeout": 30,
+    "ServerAliveCountMax": 3,
+    "TCPKeepAlive": true,
+    "Compression": true,
+    "StrictHostKeyChecking": false
   },
   "servers": [
     {
-      "name": "example-password",
-      "ip": "example-password",
+      "name": "生产服务器-Web01",
+      "ip": "192.168.1.100",
       "port": 22,
-      "user": "example-password",
-      "password": "example-password",
-      "method": "example-password",
+      "user": "root",
+      "password": "your_password_here",
+      "method": "password",
       "key": "",
       "options": {
-        "ServerAliveInterval": 20
+        "ServerAliveInterval": 20,
+        "ConnectTimeout": 15
       },
-      "alias": "example"
+      "alias": "web01",
+      "log": {
+        "enable": true,
+        "filename": "web01.log",
+        "mode": "append"
+      }
     },
     {
-      "name": "example-key",
-      "ip": "example-key",
-      "user": "example-key",
-      "method": "key"
+      "name": "开发服务器-Dev01",
+      "ip": "192.168.1.101",
+      "port": 2222,
+      "user": "developer",
+      "password": "",
+      "method": "key",
+      "key": "~/.ssh/id_rsa",
+      "options": {
+        "ServerAliveInterval": 60,
+        "Compression": false
+      },
+      "alias": "dev01",
+      "log": {
+        "enable": false,
+        "filename": "",
+        "mode": "cover"
+      }
+    },
+    {
+      "name": "数据库服务器-DB01",
+      "ip": "10.0.0.50",
+      "port": 22,
+      "user": "dbadmin",
+      "password": "secure_db_password",
+      "method": "password",
+      "key": "",
+      "options": {
+        "ServerAliveInterval": 30,
+        "ConnectTimeout": 10,
+        "TCPKeepAlive": true
+      },
+      "alias": "db01",
+      "log": {
+        "enable": true,
+        "filename": "database.log",
+        "mode": "append"
+      }
+    },
+    {
+      "name": "跳板机",
+      "ip": "jump.company.com",
+      "port": 22,
+      "user": "jumpuser",
+      "password": "",
+      "method": "key",
+      "key": "~/.ssh/jump_key",
+      "options": {
+        "ServerAliveInterval": 60,
+        "ConnectTimeout": 30
+      },
+      "alias": "jump",
+      "log": {
+        "enable": true,
+        "filename": "jump_server.log",
+        "mode": "cover"
+      }
     }
   ],
   "groups": [
     {
-      "group_name": "your group name",
-      "prefix": "a",
+      "group_name": "生产环境",
+      "prefix": "p",
       "servers": [
         {
-          "name": "example1",
-          "ip": "example1",
-          "user": "example1",
-          "password": "example1"
+          "name": "生产Web服务器1",
+          "ip": "prod-web-01.company.com",
+          "port": 22,
+          "user": "webuser",
+          "password": "prod_web_password",
+          "method": "password",
+          "alias": "pweb1",
+          "log": {
+            "enable": true,
+            "filename": "prod_web1.log",
+            "mode": "append"
+          }
         },
         {
-          "name": "example2",
-          "ip": "example2",
-          "user": "example2",
-          "password": "example2"
+          "name": "生产Web服务器2",
+          "ip": "prod-web-02.company.com",
+          "port": 22,
+          "user": "webuser",
+          "password": "",
+          "method": "key",
+          "key": "~/.ssh/prod_key",
+          "alias": "pweb2",
+          "log": {
+            "enable": true,
+            "filename": "prod_web2.log",
+            "mode": "append"
+          }
+        },
+        {
+          "name": "生产数据库主库",
+          "ip": "prod-db-master.company.com",
+          "port": 22,
+          "user": "dbuser",
+          "password": "prod_db_password",
+          "method": "password",
+          "alias": "pdb",
+          "log": {
+            "enable": true,
+            "filename": "prod_db_master.log",
+            "mode": "append"
+          }
+        }
+      ],
+      "collapse": false,
+      "proxy": {
+        "type": "SOCKS5",
+        "server": "proxy.company.com",
+        "port": 1080,
+        "user": "proxy_user",
+        "password": "proxy_password"
+      }
+    },
+    {
+      "group_name": "测试环境",
+      "prefix": "t",
+      "servers": [
+        {
+          "name": "测试Web服务器",
+          "ip": "test-web.company.com",
+          "port": 22,
+          "user": "testuser",
+          "password": "test_password",
+          "method": "password",
+          "alias": "tweb",
+          "log": {
+            "enable": false,
+            "filename": "",
+            "mode": "cover"
+          }
+        },
+        {
+          "name": "测试数据库",
+          "ip": "test-db.company.com",
+          "port": 3306,
+          "user": "testdb",
+          "password": "",
+          "method": "key",
+          "key": "~/.ssh/test_key",
+          "alias": "tdb",
+          "log": {
+            "enable": true,
+            "filename": "test_db.log",
+            "mode": "cover"
+          }
+        }
+      ],
+      "collapse": true
+    },
+    {
+      "group_name": "开发环境",
+      "prefix": "d",
+      "servers": [
+        {
+          "name": "开发服务器1",
+          "ip": "dev1.local",
+          "port": 22,
+          "user": "dev",
+          "password": "dev123",
+          "method": "password",
+          "alias": "dev1"
+        },
+        {
+          "name": "开发服务器2",
+          "ip": "dev2.local",
+          "port": 22,
+          "user": "dev",
+          "password": "dev123",
+          "method": "password",
+          "alias": "dev2"
+        },
+        {
+          "name": "本地虚拟机",
+          "ip": "127.0.0.1",
+          "port": 2222,
+          "user": "vagrant",
+          "password": "",
+          "method": "key",
+          "key": "~/.vagrant.d/insecure_private_key",
+          "alias": "vm",
+          "options": {
+            "ConnectTimeout": 5,
+            "ServerAliveInterval": 10
+          }
         }
       ],
       "collapse": false
