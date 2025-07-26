@@ -1,8 +1,7 @@
 package app
 
 import (
-	"autossh/src/utils"
-	"strings"
+	"fmt"
 )
 
 type Operation struct {
@@ -27,38 +26,22 @@ func init() {
 			{Key: "exit", Label: "退出", End: true},
 		},
 	}
-}
 
-func showMenu() {
-	var columnsMaxWidths = make(map[int]int)
-
+	// 初始化operations映射
 	for i := 0; i < len(menuMap); i++ {
 		for j := 0; j < len(menuMap[i]); j++ {
 			operation := menuMap[i][j]
-
-			// 计算每列最大长度
-			maxLen := int(utils.ZhLen(operationFormat(operation)))
-			if _, exists := columnsMaxWidths[j]; !exists {
-				columnsMaxWidths[j] = maxLen
-			}
-			if columnsMaxWidths[j] < maxLen {
-				columnsMaxWidths[j] = maxLen
-			}
-
 			operations[operation.Key] = operation
 		}
 	}
+}
 
-	for i := 0; i < len(menuMap); i++ {
-		var output = ""
-		for j := 0; j < len(menuMap[i]); j++ {
-			operation := menuMap[i][j]
-			output += stringPadding(operationFormat(operation), columnsMaxWidths[j]) + "\t"
-		}
-
-		utils.Logln(strings.TrimSpace(output))
-		output = ""
-	}
+func showMenu() {
+	// 美化菜单显示
+	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
+	fmt.Println("│  📝 add     - 添加新服务器    │  ✏️  edit   - 编辑服务器    │")
+	fmt.Println("│  🗑️  remove  - 删除服务器    │  🚪 exit    - 退出程序      │")
+	fmt.Println("└─────────────────────────────────────────────────────────────┘")
 }
 
 func operationFormat(operation Operation) string {

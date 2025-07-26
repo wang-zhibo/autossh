@@ -4,10 +4,6 @@ import (
 	"autossh/src/utils"
 	"errors"
 	"fmt"
-	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/terminal"
-	"golang.org/x/net/proxy"
 	"io/ioutil"
 	"net"
 	"os"
@@ -17,6 +13,11 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/net/proxy"
 )
 
 // 连接池管理
@@ -39,7 +40,7 @@ func init() {
 func cleanupConnectionPool() {
 	poolMutex.Lock()
 	defer poolMutex.Unlock()
-	
+
 	for key, client := range connectionPool {
 		// 测试连接是否还有效
 		session, err := client.NewSession()
@@ -103,14 +104,14 @@ func (server *Server) FormatPrint(flag string, ShowDetail bool) string {
 	var builder strings.Builder
 	builder.WriteString(" [")
 	builder.WriteString(flag)
-	
+
 	if server.Alias != "" {
 		builder.WriteString("|")
 		builder.WriteString(server.Alias)
 	}
 	builder.WriteString("]\t")
 	builder.WriteString(server.Name)
-	
+
 	if ShowDetail {
 		builder.WriteString(" [")
 		builder.WriteString(server.User)
@@ -118,7 +119,7 @@ func (server *Server) FormatPrint(flag string, ShowDetail bool) string {
 		builder.WriteString(server.Ip)
 		builder.WriteString("]")
 	}
-	
+
 	return builder.String()
 }
 
@@ -140,19 +141,19 @@ func (server *Server) getConnectionKey() string {
 // 从连接池获取或创建SSH Client - 优化版本
 func (server *Server) GetSshClient() (*ssh.Client, error) {
 	connectionKey := server.getConnectionKey()
-	
+
 	// 尝试从连接池获取现有连接
 	poolMutex.RLock()
 	if client, exists := connectionPool[connectionKey]; exists {
 		poolMutex.RUnlock()
-		
+
 		// 测试连接是否有效
 		session, err := client.NewSession()
 		if err == nil {
 			session.Close()
 			return client, nil
 		}
-		
+
 		// 连接无效，从池中移除
 		poolMutex.Lock()
 		delete(connectionPool, connectionKey)
@@ -161,7 +162,7 @@ func (server *Server) GetSshClient() (*ssh.Client, error) {
 	} else {
 		poolMutex.RUnlock()
 	}
-	
+
 	// 创建新连接
 	auth, err := parseAuthMethods(server)
 	if err != nil {
@@ -190,16 +191,16 @@ func (server *Server) GetSshClient() (*ssh.Client, error) {
 	} else {
 		client, err = ssh.Dial("tcp", addr, config)
 	}
-	
+
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 将新连接添加到池中
 	poolMutex.Lock()
 	connectionPool[connectionKey] = client
 	poolMutex.Unlock()
-	
+
 	return client, nil
 }
 
@@ -242,20 +243,21 @@ func (server *Server) GetSftpClient() (*sftp.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	sftpClient, err := sftp.NewClient(sshClient)
 	if err != nil {
 		sshClient.Close()
 		return nil, fmt.Errorf("创建SFTP客户端失败: %w", err)
 	}
-	
+
 	return sftpClient, nil
 }
 
 // 执行远程连接
 func (server *Server) Connect() error {
-	utils.Logln(fmt.Sprintf("正在连接到服务器: %s@%s:%d", server.User, server.Ip, server.Port))
-	
+	// 美化连接过程显示 - 确保左对齐
+	fmt.Print("🔗 建立SSH连接中...\n")
+
 	client, err := server.GetSshClient()
 	if err != nil {
 		errorType := utils.GetErrorType(err)
@@ -274,6 +276,7 @@ func (server *Server) Connect() error {
 	}
 	defer client.Close()
 
+	fmt.Print("📡 创建SSH会话...\n")
 	session, err := client.NewSession()
 	if err != nil {
 		return fmt.Errorf("创建SSH会话失败: %w", err)
@@ -312,7 +315,18 @@ func (server *Server) Connect() error {
 
 	server.listenWindowChange(session, fd)
 
-	utils.Logln("SSH连接已建立")
+	// 连接成功提示 - 使用单次输出确保顺序
+	welcomeText := fmt.Sprintf("🎯 欢迎来到 %s (%s@%s:%d)", server.Name, server.User, server.Ip, server.Port)
+	welcomeWidth := utils.ZhLen(welcomeText)
+	
+	// 构建完整的欢迎信息块，一次性输出
+	welcomeBlock := fmt.Sprintf("✅ SSH连接已建立，正在启动Shell...\n%s\n%s\n", 
+		welcomeText, 
+		strings.Repeat("━", welcomeWidth))
+	
+	fmt.Print(welcomeBlock)
+	os.Stdout.Sync()
+
 	err = session.Shell()
 	if err != nil {
 		return fmt.Errorf("启动Shell失败: %w", err)

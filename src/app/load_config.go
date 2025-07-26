@@ -55,7 +55,7 @@ func loadConfig(configFile string) (*Config, error) {
 	if entry, exists := configCache[configFile]; exists {
 		entry.lastUsed = time.Now()
 		cacheMutex.RUnlock()
-		
+
 		// 检查文件是否被修改
 		if !entry.config.needReload() {
 			utils.Logln("使用缓存的配置文件: %s", configFile)
@@ -69,7 +69,7 @@ func loadConfig(configFile string) (*Config, error) {
 	var cfg Config
 	decoder := json.NewDecoder(bytes.NewReader(fileInfo))
 	decoder.DisallowUnknownFields() // 严格模式，提高安全性
-	
+
 	if err := decoder.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件JSON失败: %w", err)
 	}
@@ -94,7 +94,7 @@ func loadConfig(configFile string) (*Config, error) {
 		modTime:  time.Now(),
 		lastUsed: time.Now(),
 	}
-	
+
 	// 清理过期缓存（保留最近10分钟使用的）
 	cleanupThreshold := time.Now().Add(-10 * time.Minute)
 	for path, entry := range configCache {
@@ -104,7 +104,7 @@ func loadConfig(configFile string) (*Config, error) {
 	}
 	cacheMutex.Unlock()
 
-	utils.Logln("成功加载配置文件: %s", configFile)
+	// utils.Logln("成功加载配置文件: %s", configFile)
 	return &cfg, nil
 }
 
@@ -164,19 +164,19 @@ func (g *Group) validate() error {
 	if g.Prefix == "" {
 		return fmt.Errorf("组前缀不能为空")
 	}
-	
+
 	for i, server := range g.Servers {
 		if err := server.validate(); err != nil {
 			return fmt.Errorf("组内服务器[%d]配置错误: %w", i, err)
 		}
 	}
-	
+
 	if g.Proxy != nil {
 		if err := g.Proxy.validate(); err != nil {
 			return fmt.Errorf("代理配置错误: %w", err)
 		}
 	}
-	
+
 	return nil
 }
 

@@ -22,7 +22,7 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 		stopTimer := utils.StartTimer("input_check")
 		cmd, inputCmd, extInfo := checkInput(cfg)
 		stopTimer()
-		
+
 		switch inputCmd {
 		case InputCmdOpt:
 			// 性能监控：操作处理
@@ -42,20 +42,138 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 			stopTimer()
 			return
 		case InputCmdServer:
+			// 清屏并显示连接信息
+			utils.Clear()
+
 			// 性能监控：服务器连接
 			stopTimer := utils.StartTimer("server_connect")
 			server := cfg.serverIndex[cmd].server
-			utils.Logln("你选择了", server.Name)
+
+			// 计算最大宽度以确保对齐
+			serverName := server.Name
+			serverAddr := fmt.Sprintf("%s@%s:%d", server.User, server.Ip, server.Port)
+			maxWidth := 60
+
+			// 确保有足够的宽度容纳内容
+			nameWidth := utils.ZhLen(serverName)
+			addrWidth := utils.ZhLen(serverAddr)
+			if nameWidth+20 > maxWidth {
+				maxWidth = nameWidth + 20
+			}
+			if addrWidth+15 > maxWidth {
+				maxWidth = addrWidth + 15
+			}
+
+			// 美化连接提示
+			fmt.Println()
+			fmt.Println("╔" + strings.Repeat("═", maxWidth-2) + "╗")
+
+			// 服务器名称行
+			nameText := "🚀 正在连接到服务器: " + serverName
+			namePadding := maxWidth - utils.ZhLen(nameText) - 4
+			if namePadding < 0 {
+				namePadding = 0
+			}
+			fmt.Printf("║ %s%s ║\n", nameText, strings.Repeat(" ", namePadding))
+
+			// 地址行
+			addrText := "📍 地址: " + serverAddr
+			addrPadding := maxWidth - utils.ZhLen(addrText) - 4
+			if addrPadding < 0 {
+				addrPadding = 0
+			}
+			fmt.Printf("║ %s%s ║\n", addrText, strings.Repeat(" ", addrPadding))
+
+			// 等待行
+			waitText := "⏳ 请稍候..."
+			waitPadding := maxWidth - utils.ZhLen(waitText) - 4
+			if waitPadding < 0 {
+				waitPadding = 0
+			}
+			fmt.Printf("║ %s%s ║\n", waitText, strings.Repeat(" ", waitPadding))
+
+			fmt.Println("╚" + strings.Repeat("═", maxWidth-2) + "╝")
+			fmt.Println()
+
 			err := server.Connect()
 			stopTimer()
-			
+
 			if err != nil {
-				utils.Error("连接失败: ", err)
-				utils.Logln("按回车返回主菜单。")
+				// 美化错误提示
+				errorMsg := err.Error()
+				errorWidth := 60
+				if utils.ZhLen(errorMsg)+20 > errorWidth {
+					errorWidth = utils.ZhLen(errorMsg) + 20
+				}
+
+				fmt.Println()
+				fmt.Println("╔" + strings.Repeat("═", errorWidth-2) + "╗")
+
+				// 错误标题
+				failText := "❌ 连接失败"
+				failPadding := errorWidth - utils.ZhLen(failText) - 4
+				if failPadding < 0 {
+					failPadding = 0
+				}
+				fmt.Printf("║ %s%s ║\n", failText, strings.Repeat(" ", failPadding))
+
+				// 错误信息
+				errText := "📝 错误信息: " + errorMsg
+				errPadding := errorWidth - utils.ZhLen(errText) - 4
+				if errPadding < 0 {
+					errPadding = 0
+				}
+				fmt.Printf("║ %s%s ║\n", errText, strings.Repeat(" ", errPadding))
+
+				// 提示信息
+				tipText := "💡 请检查服务器配置和网络连接"
+				tipPadding := errorWidth - utils.ZhLen(tipText) - 4
+				if tipPadding < 0 {
+					tipPadding = 0
+				}
+				fmt.Printf("║ %s%s ║\n", tipText, strings.Repeat(" ", tipPadding))
+
+				fmt.Println("╚" + strings.Repeat("═", errorWidth-2) + "╝")
+				fmt.Println()
+				fmt.Print("按回车键返回主菜单...")
 				fmt.Scanln()
 				return false, true, false
 			} else {
-				utils.Logln("连接已断开，程序退出。")
+				// 美化断开提示
+				exitWidth := 60
+				if utils.ZhLen(serverName)+15 > exitWidth {
+					exitWidth = utils.ZhLen(serverName) + 15
+				}
+
+				fmt.Println()
+				fmt.Println("╔" + strings.Repeat("═", exitWidth-2) + "╗")
+
+				// 结束标题
+				endText := "✅ SSH会话已结束"
+				endPadding := exitWidth - utils.ZhLen(endText) - 4
+				if endPadding < 0 {
+					endPadding = 0
+				}
+				fmt.Printf("║ %s%s ║\n", endText, strings.Repeat(" ", endPadding))
+
+				// 服务器名称
+				srvText := "🏠 服务器: " + serverName
+				srvPadding := exitWidth - utils.ZhLen(srvText) - 4
+				if srvPadding < 0 {
+					srvPadding = 0
+				}
+				fmt.Printf("║ %s%s ║\n", srvText, strings.Repeat(" ", srvPadding))
+
+				// 感谢信息
+				byeText := "👋 感谢使用 AutoSSH，再见！"
+				byePadding := exitWidth - utils.ZhLen(byeText) - 4
+				if byePadding < 0 {
+					byePadding = 0
+				}
+				fmt.Printf("║ %s%s ║\n", byeText, strings.Repeat(" ", byePadding))
+
+				fmt.Println("╚" + strings.Repeat("═", exitWidth-2) + "╝")
+				fmt.Println()
 				os.Exit(0)
 			}
 		case InputCmdGroupPrefix:
@@ -65,7 +183,7 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 			group.Collapse = !group.Collapse
 			err := cfg.saveConfig(false)
 			stopTimer()
-			
+
 			if err != nil {
 				utils.Error("保存分组折叠状态失败: ", err)
 				continue

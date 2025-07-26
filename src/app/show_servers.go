@@ -2,16 +2,16 @@ package app
 
 import (
 	"autossh/src/utils"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
-	"fmt"
 )
 
 var (
 	// 缓存显示内容以避免重复计算
-	displayCache = make(map[string]string)
-	displayCacheMutex   sync.RWMutex
+	displayCache      = make(map[string]string)
+	displayCacheMutex sync.RWMutex
 )
 
 func showServers(configFile string) {
@@ -19,7 +19,7 @@ func showServers(configFile string) {
 	stopTimer := utils.StartTimer("config_load")
 	cfg, err := loadConfig(configFile)
 	stopTimer()
-	
+
 	if err != nil {
 		utils.Errorln(err)
 		return
@@ -31,14 +31,12 @@ func showServers(configFile string) {
 		_ = utils.Clear()
 		show(cfg)
 		stopTimer()
-		
-		utils.Logln("请输入序号、别名或命令（如 add/edit/remove/exit），输入 q 或 exit 退出：")
-		
+
 		// 性能监控：用户输入处理
 		stopTimer = utils.StartTimer("input_processing")
 		loop, clear, reload := scanInput(cfg)
 		stopTimer()
-		
+
 		if !loop {
 			break
 		}
@@ -48,7 +46,7 @@ func showServers(configFile string) {
 			displayCacheMutex.Lock()
 			displayCache = make(map[string]string)
 			displayCacheMutex.Unlock()
-			
+
 			// 性能监控：配置重新加载
 			stopTimer := utils.StartTimer("config_reload")
 			cfg, err = loadConfig(configFile)
@@ -64,30 +62,49 @@ func showServers(configFile string) {
 // 显示服务 - 优化版本
 func show(cfg *Config) {
 	maxlen := separatorLength(*cfg)
-	utils.Logln(utils.FormatSeparator(" 欢迎使用 Auto SSH ", "=", maxlen))
-	
-	// 简化的欢迎信息
-	fmt.Println("城南爸爸")
-	fmt.Println("  ___   _      ___   _      ___   _      ___   _      ___   _ ")
-	fmt.Println(" [(_)] |=|    [(_)] |=|    [(_)] |=|    [(_)] |=|    [(_)] |=| ")
-	fmt.Println("  '-`  |_|     '-`  |_|     '-`  |_|     '-`  |_|     '-`  |_| ")
-	fmt.Println(" /mmm/  /     /mmm/  /     /mmm/  /     /mmm/  /     /mmm/  / ")
-	fmt.Println("       |____________|____________|____________|____________| ")
-	fmt.Println("                             |            |            | ")
-	fmt.Println("                         ___  \\\\      ___  \\\\      ___  \\\\ ")
-	fmt.Println("                        [(_)] |=|    [(_)] |=|    [(_)] |=| ")
-	fmt.Println("                         '-`  |_|     '-`  |_|     '-`  |_| ")
-	fmt.Println("                        /mmm/        /mmm/        /mmm/ ")
+
+	// 优化标题显示
 	fmt.Println()
-	
-	// 使用字符串构建器优化输出
-	var output strings.Builder
-	
-	for i, server := range cfg.Servers {
-		output.WriteString(server.FormatPrint(strconv.Itoa(i+1), cfg.ShowDetail))
-		output.WriteString("\n")
+	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                        🚀 AutoSSH 管理工具                   ║")
+	fmt.Println("║                      SSH连接管理 - 简单高效                   ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
+	fmt.Println()
+
+	// 简化的ASCII艺术
+	fmt.Println("                    🏰 城南爸爸的SSH工具箱")
+	fmt.Println("    ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐")
+	fmt.Println("    │ SSH │  │ SSH │  │ SSH │  │ SSH │  │ SSH │")
+	fmt.Println("    └─────┘  └─────┘  └─────┘  └─────┘  └─────┘")
+	fmt.Println("       │        │        │        │        │")
+	fmt.Println("    ┌──┴────────┴────────┴────────┴────────┴──┐")
+	fmt.Println("    │            🌐 网络连接管理              │")
+	fmt.Println("    └─────────────────────────────────────────┘")
+	fmt.Println()
+
+	// 服务器列表标题
+	if len(cfg.Servers) > 0 {
+		fmt.Println("📋 可用服务器列表:")
+		fmt.Println("┌" + strings.Repeat("─", maxlen-2) + "┐")
 	}
 
+	// 使用字符串构建器优化输出
+	var output strings.Builder
+
+	for i, server := range cfg.Servers {
+		serverText := server.FormatPrint(strconv.Itoa(i+1), cfg.ShowDetail)
+		output.WriteString("│ ")
+		output.WriteString(serverText)
+		// 使用utils.ZhLen计算填充空格数量
+		textWidth := utils.ZhLen(serverText)
+		padding := maxlen - textWidth - 4 // 减去边框和空格的宽度
+		if padding > 0 {
+			output.WriteString(strings.Repeat(" ", padding))
+		}
+		output.WriteString(" │\n")
+	}
+
+	// 分组服务器
 	for _, group := range cfg.Groups {
 		if len(group.Servers) == 0 {
 			continue
@@ -95,31 +112,57 @@ func show(cfg *Config) {
 
 		var collapseNotice string
 		if group.Collapse {
-			collapseNotice = "[" + group.Prefix + " ↓]"
+			collapseNotice = "📁 [" + group.Prefix + " 展开]"
 		} else {
-			collapseNotice = "[" + group.Prefix + " ↑]"
+			collapseNotice = "📂 [" + group.Prefix + " 收起]"
 		}
 
-		output.WriteString(utils.FormatSeparator(" "+group.GroupName+" "+collapseNotice+" ", "_", maxlen))
-		output.WriteString("\n")
-		
+		if len(cfg.Servers) > 0 {
+			output.WriteString("├" + strings.Repeat("─", maxlen-2) + "┤\n")
+		}
+
+		groupTitle := "🏷️  " + group.GroupName + " " + collapseNotice
+		output.WriteString("│ ")
+		output.WriteString(groupTitle)
+		// 使用utils.ZhLen计算填充空格数量
+		titleWidth := utils.ZhLen(groupTitle)
+		padding := maxlen - titleWidth - 4
+		if padding > 0 {
+			output.WriteString(strings.Repeat(" ", padding))
+		}
+		output.WriteString(" │\n")
+
 		if !group.Collapse {
 			for i, server := range group.Servers {
-				output.WriteString(server.FormatPrint(group.Prefix+strconv.Itoa(i+1), cfg.ShowDetail))
-				output.WriteString("\n")
+				serverInfo := "  └─ " + server.FormatPrint(group.Prefix+strconv.Itoa(i+1), cfg.ShowDetail)
+				output.WriteString("│ ")
+				output.WriteString(serverInfo)
+				// 使用utils.ZhLen计算填充空格数量
+				infoWidth := utils.ZhLen(serverInfo)
+				padding := maxlen - infoWidth - 4
+				if padding > 0 {
+					output.WriteString(strings.Repeat(" ", padding))
+				}
+				output.WriteString(" │\n")
 			}
 		}
 	}
 
+	if len(cfg.Servers) > 0 || len(cfg.Groups) > 0 {
+		output.WriteString("└" + strings.Repeat("─", maxlen-2) + "┘\n")
+	}
+
 	// 一次性输出所有内容
 	fmt.Print(output.String())
-	
-	utils.Logln(utils.FormatSeparator("", "=", maxlen))
+	fmt.Println()
 
+	// 显示操作菜单
+	fmt.Println("🛠️  可用操作:")
 	showMenu()
 
-	utils.Logln(utils.FormatSeparator("", "=", maxlen))
-	utils.Logln("请输入序号或操作: ")
+	fmt.Println()
+	fmt.Println("💡 提示: 输入服务器编号直接连接，输入 'q' 或 'exit' 退出程序")
+	fmt.Print("👉 请输入您的选择: ")
 }
 
 // 计算分隔符长度 - 优化版本
@@ -134,12 +177,33 @@ func separatorLength(cfg Config) int {
 		}
 	}
 	displayCacheMutex.RUnlock()
-	
-	maxlength := 60
+
+	maxlength := 70 // 增加基础宽度以适应新的显示格式
+
+	// 检查服务器名称长度
+	for _, server := range cfg.Servers {
+		serverText := server.FormatPrint("1", cfg.ShowDetail)
+		width := utils.ZhLen(serverText)
+		if width > maxlength {
+			maxlength = width + 10
+		}
+	}
+
+	// 检查分组标题长度
 	for _, group := range cfg.Groups {
-		length := utils.ZhLen(group.GroupName)
-		if length > maxlength {
-			maxlength = length + 10
+		groupTitle := "🏷️  " + group.GroupName + " 📁 [" + group.Prefix + " 展开]"
+		width := utils.ZhLen(groupTitle)
+		if width > maxlength {
+			maxlength = width + 10
+		}
+
+		// 检查分组内服务器长度
+		for _, server := range group.Servers {
+			serverInfo := "  └─ " + server.FormatPrint(group.Prefix+"1", cfg.ShowDetail)
+			width := utils.ZhLen(serverInfo)
+			if width > maxlength {
+				maxlength = width + 10
+			}
 		}
 	}
 
