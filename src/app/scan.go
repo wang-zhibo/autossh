@@ -216,8 +216,6 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 			return true, true, true
 		}
 	}
-	loop = true
-	return
 }
 
 // 检查输入

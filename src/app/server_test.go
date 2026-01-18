@@ -1,20 +1,26 @@
 package app
 
 import (
-	"fmt"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/proxy"
-	"log"
 	"net"
+	"os"
 	"testing"
 )
 
 func TestServer_Connect(t *testing.T) {
+	if os.Getenv("AUTOSSH_INTEGRATION") != "1" {
+		t.Skip("set AUTOSSH_INTEGRATION=1 to run integration test")
+	}
+
 	var server = Server{
 		Ip:     "172.18.36.217",
 		Method: "key",
 	}
 	auth, err := parseAuthMethods(&server)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sshConfig := &ssh.ClientConfig{
 		User: "work",
 		Auth: auth,
@@ -26,12 +32,12 @@ func TestServer_Connect(t *testing.T) {
 
 	client, err := proxiedSSHClient("127.0.0.1:1080", "172.18.36.217:22", sshConfig)
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 
 	session, _ := client.NewSession()
 	output, _ := session.CombinedOutput("ls")
-	fmt.Println(string(output))
+	t.Log(string(output))
 
 	// get a session etc...
 

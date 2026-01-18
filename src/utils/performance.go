@@ -24,6 +24,11 @@ type Metric struct {
 }
 
 var globalMonitor = NewPerformanceMonitor()
+var performanceEnabled bool
+
+func EnablePerformanceMonitoring(enabled bool) {
+	performanceEnabled = enabled
+}
 
 // NewPerformanceMonitor 创建新的性能监控器
 func NewPerformanceMonitor() *PerformanceMonitor {
@@ -34,6 +39,9 @@ func NewPerformanceMonitor() *PerformanceMonitor {
 
 // StartTimer 开始计时
 func StartTimer(name string) func() {
+	if !performanceEnabled {
+		return func() {}
+	}
 	start := time.Now()
 	return func() {
 		duration := time.Since(start)
@@ -130,6 +138,9 @@ func bToKb(b uint64) uint64 {
 
 // 全局函数
 func RecordPerformance(name string, duration time.Duration) {
+	if !performanceEnabled {
+		return
+	}
 	globalMonitor.Record(name, duration)
 }
 

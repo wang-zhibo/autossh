@@ -226,7 +226,7 @@ func show(cfg *Config) {
 }
 
 // 计算分隔符长度 - 简化版本
-func separatorLength(cfg Config) int {
+func separatorLength(cfg *Config) int {
 	maxlength := 80 // 基础宽度
 
 	// 检查服务器名称长度

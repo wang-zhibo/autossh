@@ -4,6 +4,7 @@ import (
 	"autossh/src/utils"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,57 +14,76 @@ var (
 	Version string
 	Build   string
 
-	c       string
-	v       bool
-	h       bool
-	upgrade bool
-	cp      bool
-	debug   bool
-	perf    bool // 性能监控标志
+	c                        string
+	v                        bool
+	h                        bool
+	upgrade                  bool
+	cp                       bool
+	debug                    bool
+	perf                     bool // 性能监控标志
+	insecureSkipHostKeyCheck bool
 )
 
-func init() {
-	// 取执行文件所在目录下的config.json
-	dir, _ := os.Executable()
-	c = filepath.Dir(dir) + "/config.json"
+func defaultConfigFilePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "config.json"
+	}
+	return filepath.Join(filepath.Dir(exe), "config.json")
+}
 
-	// 命令行参数定义
-	flag.StringVar(&c, "c", c, "指定配置文件路径")
-	flag.StringVar(&c, "config", c, "指定配置文件路径")
+func Run() {
+	c = defaultConfigFilePath()
 
-	flag.BoolVar(&v, "v", false, "显示版本信息")
-	flag.BoolVar(&v, "version", false, "显示版本信息")
+	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { usage(fs.Output()) }
 
-	flag.BoolVar(&h, "h", false, "显示帮助信息")
-	flag.BoolVar(&h, "help", false, "显示帮助信息")
+	fs.StringVar(&c, "c", c, "指定配置文件路径")
+	fs.StringVar(&c, "config", c, "指定配置文件路径")
 
-	flag.BoolVar(&debug, "debug", false, "启用调试模式")
-	flag.BoolVar(&perf, "perf", false, "启用性能监控")
+	fs.BoolVar(&v, "v", false, "显示版本信息")
+	fs.BoolVar(&v, "version", false, "显示版本信息")
 
-	flag.Usage = usage
-	flag.Parse()
+	fs.BoolVar(&h, "h", false, "显示帮助信息")
+	fs.BoolVar(&h, "help", false, "显示帮助信息")
 
-	// 处理位置参数
-	if len(flag.Args()) > 0 {
-		arg := flag.Arg(0)
+	fs.BoolVar(&debug, "debug", false, "启用调试模式")
+	fs.BoolVar(&perf, "perf", false, "启用性能监控")
+	fs.BoolVar(&insecureSkipHostKeyCheck, "insecure", false, "跳过 SSH HostKey 校验（不安全）")
+	fs.BoolVar(&insecureSkipHostKeyCheck, "skip-host-key-check", false, "跳过 SSH HostKey 校验（不安全）")
+
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	upgrade = false
+	cp = false
+	defaultServer = ""
+	var cpArgs []string
+
+	if len(fs.Args()) > 0 {
+		arg := fs.Args()[0]
 		switch strings.ToLower(arg) {
 		case "upgrade":
 			upgrade = true
 		case "cp":
 			cp = true
+			cpArgs = fs.Args()[1:]
 		default:
 			defaultServer = arg
 		}
 	}
-}
 
-func Run() {
+	utils.EnablePerformanceMonitoring(perf)
+
 	defer func() {
 		if r := recover(); r != nil {
-			utils.Error("程序发生严重错误: %v", r)
+			utils.Errorf("程序发生严重错误: %v", r)
 			os.Exit(1)
 		}
-		
+
 		// 如果启用了性能监控，在程序结束时打印报告
 		if perf {
 			utils.PrintPerformanceMetrics()
@@ -86,7 +106,7 @@ func Run() {
 	} else if upgrade {
 		showUpgrade()
 	} else if cp {
-		showCp(c)
+		showCp(c, cpArgs)
 	} else {
 		if perf && stopTimer != nil {
 			stopTimer()
@@ -96,8 +116,8 @@ func Run() {
 }
 
 // usage 显示使用说明
-func usage() {
-	fmt.Fprintf(os.Stderr, `AutoSSH - 一个简单的SSH连接管理工具
+func usage(w io.Writer) {
+	fmt.Fprintf(w, `AutoSSH - 一个简单的SSH连接管理工具
 
 用法:
   autossh [选项] [服务器编号/别名]
@@ -108,6 +128,7 @@ func usage() {
   -h, --help            显示帮助信息
   -debug                启用调试模式
   -perf                 启用性能监控
+  --insecure            跳过 SSH HostKey 校验（不安全）
 
 命令:
   upgrade               检查并下载最新版本

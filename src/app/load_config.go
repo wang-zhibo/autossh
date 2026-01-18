@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"sync"
 	"time"
 )
@@ -39,30 +39,32 @@ func loadConfig(configFile string) (*Config, error) {
 		return nil, fmt.Errorf("解析配置文件路径失败: %w", err)
 	}
 
-	// 检查文件是否存在
-	if exists, _ := utils.FileIsExists(configFile); !exists {
-		return nil, fmt.Errorf("配置文件不存在: %s", configFile)
-	}
-
-	// 获取文件信息
-	fileInfo, err := ioutil.ReadFile(configFile)
+	fileStat, err := os.Stat(configFile)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("配置文件不存在: %s", configFile)
+		}
 		return nil, fmt.Errorf("读取配置文件失败: %w", err)
 	}
+	modTime := fileStat.ModTime()
 
 	// 检查缓存
 	cacheMutex.RLock()
-	if entry, exists := configCache[configFile]; exists {
-		entry.lastUsed = time.Now()
-		cacheMutex.RUnlock()
+	entry, exists := configCache[configFile]
+	cacheMutex.RUnlock()
 
-		// 检查文件是否被修改
-		if !entry.config.needReload() {
-			utils.Logln("使用缓存的配置文件: %s", configFile)
-			return entry.config, nil
-		}
-	} else {
-		cacheMutex.RUnlock()
+	if exists && entry.config != nil && entry.modTime.Equal(modTime) {
+		utils.Logf("使用缓存的配置文件: %s", configFile)
+
+		cacheMutex.Lock()
+		entry.lastUsed = time.Now()
+		cacheMutex.Unlock()
+		return entry.config, nil
+	}
+
+	fileInfo, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil, fmt.Errorf("读取配置文件失败: %w", err)
 	}
 
 	// 解析JSON - 使用更高效的解码器
@@ -76,7 +78,7 @@ func loadConfig(configFile string) (*Config, error) {
 
 	// 设置文件路径和初始状态
 	cfg.file = configFile
-	cfg.lastModTime = time.Now()
+	cfg.lastModTime = modTime
 	cfg.isDirty = false
 
 	// 验证配置
@@ -91,7 +93,7 @@ func loadConfig(configFile string) (*Config, error) {
 	cacheMutex.Lock()
 	configCache[configFile] = &configCacheEntry{
 		config:   &cfg,
-		modTime:  time.Now(),
+		modTime:  modTime,
 		lastUsed: time.Now(),
 	}
 

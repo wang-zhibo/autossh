@@ -168,7 +168,7 @@ func (cfg *Config) saveConfig(backup bool) error {
 
 	cfg.isDirty = false
 	cfg.lastModTime = time.Now()
-	utils.Logln("配置文件已保存: %s", cfg.file)
+	utils.Logf("配置文件已保存: %s", cfg.file)
 	return nil
 }
 
@@ -242,7 +242,7 @@ func (cfg *Config) backup() error {
 		return fmt.Errorf("复制文件内容失败: %w", err)
 	}
 
-	utils.Logln("配置文件已备份: %s", backupFile)
+	utils.Logf("配置文件已备份: %s", backupFile)
 	return nil
 }
 
@@ -287,13 +287,12 @@ func (cfg *Config) cleanupOldBackups(maxBackups int) error {
 	if len(fileInfos) > maxBackups {
 		for _, fileInfo := range fileInfos[maxBackups:] {
 			if err := os.Remove(fileInfo.path); err != nil {
-				utils.Error("删除旧备份文件失败: %s, %v", fileInfo.path, err)
+				utils.Errorf("删除旧备份文件失败: %s, %v", fileInfo.path, err)
 			} else {
-				utils.Logln("已删除旧备份文件: %s", fileInfo.path)
+				utils.Logf("已删除旧备份文件: %s", fileInfo.path)
 			}
 		}
 	}
 
 	return nil
 }
-

@@ -4,8 +4,6 @@ import (
 	"autossh/src/utils"
 	"flag"
 	"fmt"
-	"github.com/pkg/errors"
-	"github.com/pkg/sftp"
 	"io"
 	"os"
 	"path"
@@ -14,6 +12,9 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/pkg/errors"
+	"github.com/pkg/sftp"
 )
 
 type ResType int
@@ -39,7 +40,7 @@ type Cp struct {
 }
 
 // 复制
-func showCp(configFile string) {
+func showCp(configFile string, args []string) {
 	var err error
 	cfg, err := loadConfig(configFile)
 	if err != nil {
@@ -48,7 +49,7 @@ func showCp(configFile string) {
 	}
 
 	cp := Cp{cfg: cfg}
-	if err := cp.parse(); err != nil {
+	if err := cp.parse(args); err != nil {
 		utils.Errorln(err)
 		return
 	}
@@ -102,27 +103,30 @@ func showCp(configFile string) {
 }
 
 // 解析参数
-func (cp *Cp) parse() error {
-	os.Args = flag.Args()
-	flag.BoolVar(&cp.isDir, "r", false, "文件夹")
-	flag.Parse()
+func (cp *Cp) parse(args []string) error {
+	fs := flag.NewFlagSet("cp", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.BoolVar(&cp.isDir, "r", false, "文件夹")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
-	var args = flag.Args()
-	var length = len(args)
+	restArgs := fs.Args()
+	length := len(restArgs)
 	var err error
 
-	if len(args) < 1 {
+	if len(restArgs) < 1 {
 		return errors.New("请输入完整参数")
 	}
 
-	cp.target, err = newTransferObject(*cp.cfg, args[length-1])
+	cp.target, err = newTransferObject(cp.cfg, restArgs[length-1])
 	if err != nil {
 		return err
 	}
 
 	cp.sources = make([]*TransferObject, 0)
-	for _, arg := range args[:length-1] {
-		s, err := newTransferObject(*cp.cfg, arg)
+	for _, arg := range restArgs[:length-1] {
+		s, err := newTransferObject(cp.cfg, arg)
 		if err != nil {
 			return err
 		}
@@ -158,18 +162,7 @@ func (cp *Cp) ioCopy(srcIO IOClient, dstIO IOClient, srcFile FileLike, dst strin
 	bytesCount := 0
 	filename := path.Base(srcFile.Name())
 	startTime := time.Now()
-	speed := 0.0
-	var process = 0.0
-
-	go func() {
-		for {
-			cp.printProcess(filename, process, startTime, speed)
-			time.Sleep(time.Second)
-			if process >= 100 {
-				break
-			}
-		}
-	}()
+	lastPrint := time.Now()
 
 	srcFileInfo, err := srcFile.Stat()
 	if err != nil {
@@ -189,8 +182,12 @@ func (cp *Cp) ioCopy(srcIO IOClient, dstIO IOClient, srcFile FileLike, dst strin
 			return cp.target.path, err
 		}
 		bytesCount += wn
-		process = float64(bytesCount) / float64(srcFileInfo.Size()) * 100
-		speed = float64(bytesCount) / time.Now().Sub(startTime).Seconds()
+		process := float64(bytesCount) / float64(srcFileInfo.Size()) * 100
+		speed := float64(bytesCount) / time.Since(startTime).Seconds()
+		if time.Since(lastPrint) >= time.Second && !eof {
+			cp.printProcess(filename, process, startTime, speed)
+			lastPrint = time.Now()
+		}
 
 		if eof {
 			cp.printProcess(filename, 100.0, startTime, speed)
@@ -288,7 +285,6 @@ func (cp *Cp) parseDstFilename(client IOClient, src string, dst string) (string,
 }
 
 func (cp *Cp) printProcess(name string, process float64, startTime time.Time, speed float64) {
-	// TODO 文件大小
 	execTime := time.Now().Sub(startTime)
 
 	type winSize struct {
@@ -306,6 +302,9 @@ func (cp *Cp) printProcess(name string, process float64, startTime time.Time, sp
 	padding := 0
 	if int(retCode) != -1 {
 		padding = int(ws.Col) - utils.ZhLen(name) - 40
+		if padding < 0 {
+			padding = 0
+		}
 	}
 
 	extInfo := fmt.Sprintf("%.2f%%  %10s/s  %02.0f:%02.0f:%02.0f",
@@ -324,7 +323,7 @@ func (cp *Cp) printFileError(name string, err error) {
 }
 
 // 创建传输对象
-func newTransferObject(cfg Config, raw string) (*TransferObject, error) {
+func newTransferObject(cfg *Config, raw string) (*TransferObject, error) {
 	obj := TransferObject{
 		raw: raw,
 	}

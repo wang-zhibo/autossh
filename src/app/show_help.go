@@ -1,9 +1,9 @@
 package app
 
 import (
-	"flag"
+	"os"
 )
 
 func showHelp() {
-	flag.Usage()
+	usage(os.Stdout)
 }

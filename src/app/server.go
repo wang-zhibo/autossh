@@ -16,6 +16,7 @@ import (
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	"golang.org/x/crypto/ssh/terminal"
 	"golang.org/x/net/proxy"
 )
@@ -133,6 +134,104 @@ func (server *Server) getConnectTimeout() time.Duration {
 	return 30 * time.Second // 默认30秒超时
 }
 
+func (server *Server) shouldSkipHostKeyCheck() bool {
+	if insecureSkipHostKeyCheck {
+		return true
+	}
+
+	if server.Options == nil {
+		return false
+	}
+
+	if val, ok := server.Options["InsecureSkipHostKeyChecking"]; ok {
+		if b, ok := toBool(val); ok {
+			return b
+		}
+	}
+	if val, ok := server.Options["SkipHostKeyCheck"]; ok {
+		if b, ok := toBool(val); ok {
+			return b
+		}
+	}
+	if val, ok := server.Options["StrictHostKeyChecking"]; ok {
+		if b, ok := toBool(val); ok {
+			return !b
+		}
+		if s, ok := val.(string); ok {
+			switch strings.ToLower(strings.TrimSpace(s)) {
+			case "no", "false", "0", "off":
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (server *Server) getKnownHostsFile() (string, error) {
+	if server.Options != nil {
+		if val, ok := server.Options["KnownHostsFile"]; ok {
+			if s, ok := val.(string); ok && strings.TrimSpace(s) != "" {
+				return utils.ParsePath(s)
+			}
+		}
+	}
+	return utils.ParsePath("~/.ssh/known_hosts")
+}
+
+func (server *Server) getHostKeyCallback() (ssh.HostKeyCallback, error) {
+	if server.shouldSkipHostKeyCheck() {
+		return ssh.InsecureIgnoreHostKey(), nil
+	}
+
+	knownHostsFile, err := server.getKnownHostsFile()
+	if err != nil {
+		return nil, fmt.Errorf("解析 KnownHostsFile 失败: %w", err)
+	}
+
+	if _, err := os.Stat(knownHostsFile); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("known_hosts 文件不存在: %s（可使用 --insecure 跳过校验）", knownHostsFile)
+		}
+		return nil, fmt.Errorf("读取 known_hosts 失败: %w", err)
+	}
+
+	cb, err := knownhosts.New(knownHostsFile)
+	if err != nil {
+		return nil, fmt.Errorf("解析 known_hosts 失败: %w", err)
+	}
+
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		if err := cb(hostname, remote, key); err != nil {
+			fp := ssh.FingerprintSHA256(key)
+			return fmt.Errorf("SSH HostKey 校验失败: %s (%s): %w（指纹: %s，known_hosts: %s，可用 --insecure 跳过）", hostname, remote.String(), err, fp, knownHostsFile)
+		}
+		return nil
+	}, nil
+}
+
+func toBool(v interface{}) (bool, bool) {
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case float64:
+		return x != 0, true
+	case int:
+		return x != 0, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(x)) {
+		case "1", "true", "yes", "y", "on":
+			return true, true
+		case "0", "false", "no", "n", "off":
+			return false, true
+		default:
+			return false, false
+		}
+	default:
+		return false, false
+	}
+}
+
 // 生成连接键用于连接池
 func (server *Server) getConnectionKey() string {
 	return fmt.Sprintf("%s@%s:%d", server.User, server.Ip, server.Port)
@@ -169,13 +268,16 @@ func (server *Server) GetSshClient() (*ssh.Client, error) {
 		return nil, fmt.Errorf("解析认证方法失败: %w", err)
 	}
 
+	hostKeyCallback, err := server.getHostKeyCallback()
+	if err != nil {
+		return nil, err
+	}
+
 	config := &ssh.ClientConfig{
-		User: server.User,
-		Auth: auth,
-		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-			return nil
-		},
-		Timeout: server.getConnectTimeout(),
+		User:            server.User,
+		Auth:            auth,
+		HostKeyCallback: hostKeyCallback,
+		Timeout:         server.getConnectTimeout(),
 	}
 
 	// 默认端口为22
@@ -464,7 +566,7 @@ func (server *Server) startKeepAliveLoop(session *ssh.Session) chan struct{} {
 				if val, ok := server.Options["ServerAliveInterval"]; ok && val != nil {
 					_, err := session.SendRequest("keepalive@bbr", true, nil)
 					if err != nil {
-						utils.Error("发送心跳包失败: %v", err)
+						utils.Errorf("发送心跳包失败: %v", err)
 					}
 
 					if interval, ok := val.(float64); ok {
@@ -490,7 +592,7 @@ func (server *Server) listenWindowChange(session *ssh.Session, fd int) {
 		signal.Notify(sigwinchCh, syscall.SIGWINCH)
 		termWidth, termHeight, err := terminal.GetSize(fd)
 		if err != nil {
-			utils.Error("获取终端大小失败: %v", err)
+			utils.Errorf("获取终端大小失败: %v", err)
 		}
 
 		for {
@@ -501,7 +603,7 @@ func (server *Server) listenWindowChange(session *ssh.Session, fd int) {
 				}
 				currTermWidth, currTermHeight, err := terminal.GetSize(fd)
 				if err != nil {
-					utils.Error("获取当前终端大小失败: %v", err)
+					utils.Errorf("获取当前终端大小失败: %v", err)
 					continue
 				}
 
@@ -513,7 +615,7 @@ func (server *Server) listenWindowChange(session *ssh.Session, fd int) {
 				// 更新远端大小 - 修复参数顺序：WindowChange(height, width)
 				err = session.WindowChange(currTermHeight, currTermWidth)
 				if err != nil {
-					utils.Error("更新终端窗口大小失败: %v", err)
+					utils.Errorf("更新终端窗口大小失败: %v", err)
 					continue
 				}
 
