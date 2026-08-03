@@ -39,7 +39,9 @@ func Infof(format string, args ...interface{}) {
 }
 
 func Debugf(format string, args ...interface{}) {
-	Logln(fmt.Sprintf(format, args...))
+	if shouldLog(DEBUG) {
+		Logln(fmt.Sprintf(format, args...))
+	}
 }
 
 // 二维数组对齐

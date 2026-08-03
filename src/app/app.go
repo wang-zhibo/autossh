@@ -57,6 +57,10 @@ func Run() {
 		fs.Usage()
 		os.Exit(2)
 	}
+	if debug {
+		utils.SetLevel(int(utils.DEBUG))
+		utils.Debugf("调试模式已启用")
+	}
 
 	upgrade = false
 	cp = false
@@ -131,7 +135,7 @@ func usage(w io.Writer) {
   --insecure            跳过 SSH HostKey 校验（不安全）
 
 命令:
-  upgrade               检查并下载最新版本
+	  upgrade               检查最新版本与下载地址
   cp                    复制配置文件
 
 示例:

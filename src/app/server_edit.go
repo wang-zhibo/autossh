@@ -2,12 +2,12 @@ package app
 
 import (
 	"autossh/src/utils"
-	"fmt"
-	"io"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 // 编辑
@@ -38,45 +38,49 @@ func (server *Server) scanVal(fieldName string) (err error) {
 		case "int":
 			utils.Logln(fieldName + deftVal(strconv.FormatInt(field.Int(), 10)) + ":")
 			var ipt string
-			if _, err = fmt.Scanln(&ipt); err == nil {
-				ipt = strings.TrimSpace(ipt)
-				if ipt == "q" || ipt == "exit" {
-					os.Exit(0)
-				}
-				if ipt == "" {
-					return nil // 回车跳过
-				}
-				val, convErr := strconv.Atoi(ipt)
-				if convErr != nil {
-					utils.Error("请输入有效数字或回车跳过。")
-					continue
-				}
-				field.SetInt(int64(val))
-			}
-		case "string":
-			utils.Logln(fieldName + deftVal(field.String()) + ":")
-			var ipt string
-			if _, err = fmt.Scanln(&ipt); err == nil {
-				ipt = strings.TrimSpace(ipt)
-				if ipt == "q" || ipt == "exit" {
-					os.Exit(0)
-				}
-				if ipt == "" {
-					return nil // 回车跳过
-				}
-				field.SetString(ipt)
-			}
-		}
-
-		if err != nil {
-			if err == io.EOF {
+			if err = utils.Scanln(&ipt); err != nil {
 				return err
 			}
-
-			// 允许输入空行
-			if err.Error() == "unexpected newline" {
-				return nil
+			ipt = strings.TrimSpace(ipt)
+			if ipt == "q" || ipt == "exit" {
+				os.Exit(0)
 			}
+			if ipt == "" {
+				return nil // 回车跳过
+			}
+			val, convErr := strconv.Atoi(ipt)
+			if convErr != nil {
+				utils.Error("请输入有效数字或回车跳过。")
+				continue
+			}
+			field.SetInt(int64(val))
+		case "string":
+			defaultValue := field.String()
+			if fieldName == "Password" && defaultValue != "" {
+				defaultValue = "已设置"
+			}
+			var ipt string
+			if fieldName == "Password" && term.IsTerminal(int(os.Stdin.Fd())) {
+				utils.Log(fieldName + deftVal(defaultValue) + ": ")
+				var password []byte
+				password, err = term.ReadPassword(int(os.Stdin.Fd()))
+				utils.Logln()
+				ipt = string(password)
+			} else {
+				utils.Logln(fieldName + deftVal(defaultValue) + ":")
+				err = utils.Scanln(&ipt)
+			}
+			if err != nil {
+				return err
+			}
+			ipt = strings.TrimSpace(ipt)
+			if ipt == "q" || ipt == "exit" {
+				os.Exit(0)
+			}
+			if ipt == "" {
+				return nil // 回车跳过
+			}
+			field.SetString(ipt)
 		}
 		break
 	}

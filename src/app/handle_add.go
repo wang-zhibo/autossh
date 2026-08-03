@@ -2,9 +2,7 @@ package app
 
 import (
 	"autossh/src/utils"
-	"fmt"
 	"io"
-	"strings"
 )
 
 func handleAdd(cfg *Config, _ []string) error {
@@ -17,13 +15,16 @@ func handleAdd(cfg *Config, _ []string) error {
 	utils.Logln("[其他值]默认组")
 	utils.Logln("请输入要插入的组（输入 q 或 exit 取消）：")
 	g := ""
-	if _, err := fmt.Scanln(&g); err == io.EOF {
+	if err := utils.Scanln(&g); err == io.EOF {
 		return nil
+	} else if err != nil {
+		return err
 	}
-	g = strings.TrimSpace(g)
+	g = normalizeLookupKey(g)
 	if g == "q" || g == "exit" {
 		utils.Logln("已取消添加服务器。按回车返回主菜单。")
-		fmt.Scanln()
+		var ignored string
+		_ = utils.Scanln(&ignored)
 		return nil
 	}
 
@@ -49,7 +50,8 @@ func handleAdd(cfg *Config, _ []string) error {
 		utils.Error("保存配置失败: ", err)
 	} else {
 		utils.Logln("服务器添加成功！按回车返回主菜单。")
-		fmt.Scanln()
+		var ignored string
+		_ = utils.Scanln(&ignored)
 	}
 	return nil
 }

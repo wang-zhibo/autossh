@@ -3,6 +3,7 @@ package app
 import (
 	"autossh/src/utils"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -143,7 +144,8 @@ func scanInput(cfg *Config) (loop bool, clear bool, reload bool) {
 				fmt.Println("╚" + strings.Repeat("═", errorWidth-2) + "╝")
 				fmt.Println()
 				fmt.Print("按回车键返回主菜单...")
-				fmt.Scanln()
+				var ignored string
+				_ = utils.Scanln(&ignored)
 				return false, true, false
 			} else {
 				// 美化断开提示 - 彻底修复对齐问题
@@ -227,8 +229,14 @@ func checkInput(cfg *Config) (cmd string, inputCmd int, extInfo interface{}) {
 		if defaultServer == "" {
 			// 性能监控：用户输入扫描
 			stopTimer := utils.StartTimer("user_input_scan")
-			utils.Scanln(&ipt)
+			err := utils.Scanln(&ipt)
 			stopTimer()
+			if err != nil {
+				if err != io.EOF {
+					utils.Error("读取输入失败: ", err)
+				}
+				return "exit", InputCmdOpt, []string{}
+			}
 		} else {
 			ipt = defaultServer
 			defaultServer = ""

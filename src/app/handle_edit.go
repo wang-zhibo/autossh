@@ -2,16 +2,19 @@ package app
 
 import (
 	"autossh/src/utils"
-	"fmt"
 	"io"
+	"strings"
 )
 
 func handleEdit(cfg *Config, args []string) error {
 	utils.Info("请输入相应序号：")
 	id := ""
-	if _, err := fmt.Scanln(&id); err == io.EOF {
+	if err := utils.Scanln(&id); err == io.EOF {
 		return nil
+	} else if err != nil {
+		return err
 	}
+	id = strings.ToLower(strings.TrimSpace(id))
 
 	serverIndex, ok := cfg.serverIndex[id]
 	if !ok {

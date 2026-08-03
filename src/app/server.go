@@ -17,42 +17,9 @@ import (
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
-	"golang.org/x/crypto/ssh/terminal"
 	"golang.org/x/net/proxy"
+	"golang.org/x/term"
 )
-
-// 连接池管理
-var (
-	connectionPool = make(map[string]*ssh.Client)
-	poolMutex      sync.RWMutex
-	poolCleanup    = time.NewTicker(5 * time.Minute)
-)
-
-func init() {
-	// 启动连接池清理协程
-	go func() {
-		for range poolCleanup.C {
-			cleanupConnectionPool()
-		}
-	}()
-}
-
-// 清理连接池中的无效连接
-func cleanupConnectionPool() {
-	poolMutex.Lock()
-	defer poolMutex.Unlock()
-
-	for key, client := range connectionPool {
-		// 测试连接是否还有效
-		session, err := client.NewSession()
-		if err != nil {
-			client.Close()
-			delete(connectionPool, key)
-			continue
-		}
-		session.Close()
-	}
-}
 
 type Server struct {
 	Name     string                 `json:"name"`
@@ -78,6 +45,7 @@ func (server *Server) Format() {
 		server.Port = 22
 	}
 
+	server.Method = strings.ToLower(strings.TrimSpace(server.Method))
 	if server.Method == "" {
 		server.Method = "password"
 	}
@@ -128,7 +96,9 @@ func (server *Server) FormatPrint(flag string, ShowDetail bool) string {
 func (server *Server) getConnectTimeout() time.Duration {
 	if val, ok := server.Options["ConnectTimeout"]; ok && val != nil {
 		if timeout, ok := val.(float64); ok {
-			return time.Duration(timeout) * time.Second
+			if timeout > 0 {
+				return time.Duration(timeout) * time.Second
+			}
 		}
 	}
 	return 30 * time.Second // 默认30秒超时
@@ -232,37 +202,17 @@ func toBool(v interface{}) (bool, bool) {
 	}
 }
 
-// 生成连接键用于连接池
-func (server *Server) getConnectionKey() string {
-	return fmt.Sprintf("%s@%s:%d", server.User, server.Ip, server.Port)
+func (server *Server) address() string {
+	port := server.Port
+	if port == 0 {
+		port = 22
+	}
+	return net.JoinHostPort(server.Ip, strconv.Itoa(port))
 }
 
-// 从连接池获取或创建SSH Client - 优化版本
+// GetSshClient 为当前操作创建独立的 SSH 连接。交互连接和 SFTP 传输都会在完成后
+// 显式关闭该连接，避免跨服务器配置、认证方式或代理复用错误的全局状态。
 func (server *Server) GetSshClient() (*ssh.Client, error) {
-	connectionKey := server.getConnectionKey()
-
-	// 尝试从连接池获取现有连接
-	poolMutex.RLock()
-	if client, exists := connectionPool[connectionKey]; exists {
-		poolMutex.RUnlock()
-
-		// 测试连接是否有效
-		session, err := client.NewSession()
-		if err == nil {
-			session.Close()
-			return client, nil
-		}
-
-		// 连接无效，从池中移除
-		poolMutex.Lock()
-		delete(connectionPool, connectionKey)
-		client.Close()
-		poolMutex.Unlock()
-	} else {
-		poolMutex.RUnlock()
-	}
-
-	// 创建新连接
 	auth, err := parseAuthMethods(server)
 	if err != nil {
 		return nil, fmt.Errorf("解析认证方法失败: %w", err)
@@ -277,48 +227,70 @@ func (server *Server) GetSshClient() (*ssh.Client, error) {
 		User:            server.User,
 		Auth:            auth,
 		HostKeyCallback: hostKeyCallback,
-		Timeout:         server.getConnectTimeout(),
 	}
 
-	// 默认端口为22
-	if server.Port == 0 {
-		server.Port = 22
-	}
-
-	addr := server.Ip + ":" + strconv.Itoa(server.Port)
-
-	var client *ssh.Client
+	addr := server.address()
+	timeout := server.getConnectTimeout()
+	var conn net.Conn
 	if server.group != nil && server.group.Proxy != nil {
-		client, err = server.proxySshClient(server.group.Proxy, addr, config)
+		conn, err = server.proxyDial(server.group.Proxy, addr, timeout)
 	} else {
-		client, err = ssh.Dial("tcp", addr, config)
+		conn, err = (&net.Dialer{Timeout: timeout}).Dial("tcp", addr)
 	}
-
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			_ = conn.Close()
+		}
+	}()
 
-	// 将新连接添加到池中
-	poolMutex.Lock()
-	connectionPool[connectionKey] = client
-	poolMutex.Unlock()
+	if err = conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, fmt.Errorf("设置 SSH 连接超时失败: %w", err)
+	}
+	clientConn, channels, requests, err := ssh.NewClientConn(conn, addr, config)
+	if err != nil {
+		return nil, fmt.Errorf("创建 SSH 客户端连接失败: %w", err)
+	}
+	if err = conn.SetDeadline(time.Time{}); err != nil {
+		_ = clientConn.Close()
+		return nil, fmt.Errorf("清除 SSH 连接超时失败: %w", err)
+	}
 
-	return client, nil
+	return ssh.NewClient(clientConn, channels, requests), nil
 }
 
-func (server *Server) proxySshClient(p *Proxy, sshServerAddr string, sshConfig *ssh.ClientConfig) (client *ssh.Client, err error) {
+type timeoutDialer struct {
+	timeout time.Duration
+}
+
+func (dialer timeoutDialer) Dial(network string, address string) (net.Conn, error) {
+	conn, err := net.DialTimeout(network, address, dialer.timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.SetDeadline(time.Now().Add(dialer.timeout)); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func (server *Server) proxyDial(p *Proxy, sshServerAddr string, timeout time.Duration) (net.Conn, error) {
 	var dialer proxy.Dialer
 	switch p.Type {
 	case ProxyTypeSocks5:
-		var auth proxy.Auth
+		var auth *proxy.Auth
 		if p.User != "" {
-			auth = proxy.Auth{
+			auth = &proxy.Auth{
 				User:     p.User,
 				Password: p.Password,
 			}
 		}
 
-		dialer, err = proxy.SOCKS5("tcp", p.Server+":"+strconv.Itoa(p.Port), &auth, proxy.Direct)
+		var err error
+		dialer, err = proxy.SOCKS5("tcp", net.JoinHostPort(p.Server, strconv.Itoa(p.Port)), auth, timeoutDialer{timeout: timeout})
 		if err != nil {
 			return nil, fmt.Errorf("创建SOCKS5代理失败: %w", err)
 		}
@@ -330,17 +302,30 @@ func (server *Server) proxySshClient(p *Proxy, sshServerAddr string, sshConfig *
 	if err != nil {
 		return nil, fmt.Errorf("通过代理连接失败: %w", err)
 	}
-
-	c, chans, reqs, err := ssh.NewClientConn(conn, sshServerAddr, sshConfig)
-	if err != nil {
-		return nil, fmt.Errorf("创建SSH客户端连接失败: %w", err)
-	}
-
-	return ssh.NewClient(c, chans, reqs), nil
+	return conn, nil
 }
 
-// 生成Sftp Client
-func (server *Server) GetSftpClient() (*sftp.Client, error) {
+type SftpConnection struct {
+	Client    *sftp.Client
+	sshClient *ssh.Client
+}
+
+func (connection *SftpConnection) Close() error {
+	if connection == nil {
+		return nil
+	}
+	var closeErrors []error
+	if connection.Client != nil {
+		closeErrors = append(closeErrors, connection.Client.Close())
+	}
+	if connection.sshClient != nil {
+		closeErrors = append(closeErrors, connection.sshClient.Close())
+	}
+	return errors.Join(closeErrors...)
+}
+
+// GetSftpClient 创建 SFTP 会话及其底层 SSH 连接。调用方必须关闭返回的连接。
+func (server *Server) GetSftpClient() (*SftpConnection, error) {
 	sshClient, err := server.GetSshClient()
 	if err != nil {
 		return nil, err
@@ -348,11 +333,11 @@ func (server *Server) GetSftpClient() (*sftp.Client, error) {
 
 	sftpClient, err := sftp.NewClient(sshClient)
 	if err != nil {
-		sshClient.Close()
+		_ = sshClient.Close()
 		return nil, fmt.Errorf("创建SFTP客户端失败: %w", err)
 	}
 
-	return sftpClient, nil
+	return &SftpConnection{Client: sftpClient, sshClient: sshClient}, nil
 }
 
 // 执行远程连接
@@ -386,14 +371,14 @@ func (server *Server) Connect() error {
 	defer session.Close()
 
 	fd := int(os.Stdin.Fd())
-	oldState, err := terminal.MakeRaw(fd)
+	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		return fmt.Errorf("设置终端原始模式失败: %w", err)
 	}
-	defer terminal.Restore(fd, oldState)
+	defer term.Restore(fd, oldState)
 
-	stopKeepAliveLoop := server.startKeepAliveLoop(session)
-	defer close(stopKeepAliveLoop)
+	stopKeepAliveLoop := server.startKeepAliveLoop(client)
+	defer stopKeepAliveLoop()
 
 	err = server.stdIO(session)
 	if err != nil {
@@ -406,7 +391,7 @@ func (server *Server) Connect() error {
 		ssh.TTY_OP_OSPEED: 14400,
 	}
 
-	server.termWidth, server.termHeight, _ = terminal.GetSize(fd)
+	server.termWidth, server.termHeight, _ = term.GetSize(fd)
 	termType := os.Getenv("TERM")
 	if termType == "" {
 		termType = "xterm-256color"
@@ -415,7 +400,8 @@ func (server *Server) Connect() error {
 		return fmt.Errorf("请求PTY失败: %w", err)
 	}
 
-	server.listenWindowChange(session, fd)
+	stopWindowChange := server.listenWindowChange(session, fd)
+	defer stopWindowChange()
 
 	// 连接成功提示 - 简化版本
 	fmt.Println("✅ SSH连接已建立，正在启动Shell...")
@@ -426,7 +412,9 @@ func (server *Server) Connect() error {
 		return fmt.Errorf("启动Shell失败: %w", err)
 	}
 
-	_ = session.Wait()
+	if err := session.Wait(); err != nil {
+		return fmt.Errorf("SSH会话异常结束: %w", err)
+	}
 	return nil
 }
 
@@ -442,15 +430,13 @@ func (server *Server) stdIO(session *ssh.Session) error {
 		}
 
 		go func() {
-			flag := os.O_RDWR | os.O_CREATE
-			switch server.Log.Mode {
-			case LogModeAppend:
-				flag = flag | os.O_APPEND
-			case LogModeCover:
+			flag := os.O_WRONLY | os.O_CREATE | os.O_APPEND
+			if server.Log.Mode == LogModeCover {
+				flag = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 			}
 
 			logFile := server.formatLogFilename(server.Log.Filename)
-			f, err := os.OpenFile(logFile, flag, 0644)
+			f, err := os.OpenFile(logFile, flag, 0600)
 			if err != nil {
 				utils.Logln(fmt.Sprintf("打开日志文件失败: %v", err))
 				return
@@ -533,7 +519,11 @@ func pemKey(server *Server) (ssh.AuthMethod, error) {
 	if server.Key == "" {
 		server.Key = "~/.ssh/id_rsa"
 	}
-	server.Key, _ = utils.ParsePath(server.Key)
+	keyPath, err := utils.ParsePath(server.Key)
+	if err != nil {
+		return nil, fmt.Errorf("解析密钥文件路径失败: %w", err)
+	}
+	server.Key = keyPath
 
 	pemBytes, err := ioutil.ReadFile(server.Key)
 	if err != nil {
@@ -554,67 +544,98 @@ func pemKey(server *Server) (ssh.AuthMethod, error) {
 	return ssh.PublicKeys(signer), nil
 }
 
-// 发送心跳包
-func (server *Server) startKeepAliveLoop(session *ssh.Session) chan struct{} {
+func (server *Server) getKeepAliveInterval() time.Duration {
+	if server.Options == nil {
+		return 0
+	}
+	if value, ok := server.Options["ServerAliveInterval"].(float64); ok && value > 0 {
+		return time.Duration(value) * time.Second
+	}
+	return 0
+}
+
+func (server *Server) getServerAliveCountMax() int {
+	if server.Options != nil {
+		if value, ok := server.Options["ServerAliveCountMax"].(float64); ok && value > 0 {
+			return int(value)
+		}
+	}
+	return 3
+}
+
+// startKeepAliveLoop sends standard SSH global keepalive requests. The returned
+// function is idempotent for the single owner in Connect and stops the goroutine
+// before the session and client are closed.
+func (server *Server) startKeepAliveLoop(client *ssh.Client) func() {
+	interval := server.getKeepAliveInterval()
+	if interval <= 0 {
+		return func() {}
+	}
+
 	terminate := make(chan struct{})
 	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		failedChecks := 0
 		for {
 			select {
 			case <-terminate:
 				return
-			default:
-				if val, ok := server.Options["ServerAliveInterval"]; ok && val != nil {
-					_, err := session.SendRequest("keepalive@bbr", true, nil)
-					if err != nil {
-						utils.Errorf("发送心跳包失败: %v", err)
+			case <-ticker.C:
+				if _, _, err := client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+					failedChecks++
+					utils.Errorf("发送心跳包失败 (%d/%d): %v", failedChecks, server.getServerAliveCountMax(), err)
+					if failedChecks >= server.getServerAliveCountMax() {
+						_ = client.Close()
+						return
 					}
-
-					if interval, ok := val.(float64); ok {
-						time.Sleep(time.Duration(interval) * time.Second)
-					} else {
-						time.Sleep(60 * time.Second) // 默认60秒
-					}
-				} else {
-					return
+					continue
 				}
+				failedChecks = 0
 			}
 		}
 	}()
-	return terminate
+
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			close(terminate)
+		})
+	}
 }
 
-// 监听终端窗口变化
-func (server *Server) listenWindowChange(session *ssh.Session, fd int) {
-	go func() {
-		sigwinchCh := make(chan os.Signal, 1)
-		defer close(sigwinchCh)
+// listenWindowChange forwards terminal resize events and unregisters signal
+// delivery when the SSH session ends.
+func (server *Server) listenWindowChange(session *ssh.Session, fd int) func() {
+	terminate := make(chan struct{})
+	sigwinchCh := make(chan os.Signal, 1)
+	signal.Notify(sigwinchCh, syscall.SIGWINCH)
 
-		signal.Notify(sigwinchCh, syscall.SIGWINCH)
-		termWidth, termHeight, err := terminal.GetSize(fd)
+	go func() {
+		defer signal.Stop(sigwinchCh)
+
+		termWidth, termHeight, err := term.GetSize(fd)
 		if err != nil {
 			utils.Errorf("获取终端大小失败: %v", err)
 		}
 
 		for {
 			select {
-			case sigwinch := <-sigwinchCh:
-				if sigwinch == nil {
-					return
-				}
-				currTermWidth, currTermHeight, err := terminal.GetSize(fd)
+			case <-terminate:
+				return
+			case <-sigwinchCh:
+				currTermWidth, currTermHeight, err := term.GetSize(fd)
 				if err != nil {
 					utils.Errorf("获取当前终端大小失败: %v", err)
 					continue
 				}
 
-				// 判断一下窗口尺寸是否有改变
 				if currTermHeight == termHeight && currTermWidth == termWidth {
 					continue
 				}
 
-				// 更新远端大小 - 修复参数顺序：WindowChange(height, width)
-				err = session.WindowChange(currTermHeight, currTermWidth)
-				if err != nil {
+				if err := session.WindowChange(currTermHeight, currTermWidth); err != nil {
 					utils.Errorf("更新终端窗口大小失败: %v", err)
 					continue
 				}
@@ -623,4 +644,11 @@ func (server *Server) listenWindowChange(session *ssh.Session, fd int) {
 			}
 		}
 	}()
+
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			close(terminate)
+		})
+	}
 }

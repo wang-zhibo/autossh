@@ -1,89 +1,47 @@
 package utils
 
 import (
-	"bytes"
 	"errors"
+	"fmt"
 	"os"
-	"os/exec"
-	"os/user"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
-// 解析路径
-func ParsePath(path string) (string, error) {
-	str := []rune(path)
-	firstKey := string(str[:1])
+// ParsePath 解析配置中的路径。相对路径以可执行文件所在目录为基准，~ 和 ~/...
+// 使用当前用户主目录。它不执行 shell，避免依赖用户环境或把路径当作命令解释。
+func ParsePath(value string) (string, error) {
+	if value == "" {
+		return "", errors.New("路径不能为空")
+	}
 
-	if firstKey == "~" {
-		home, err := home()
+	switch {
+	case value == "~":
+		return os.UserHomeDir()
+	case strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `~\`):
+		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("获取用户主目录失败: %w", err)
 		}
-
-		return home + string(str[1:]), nil
-	} else if firstKey == "/" {
-		return path, nil
-	} else {
-		p, _ := filepath.Abs(filepath.Dir(os.Args[0]))
-		return p + "/" + path, nil
+		return filepath.Join(home, value[2:]), nil
+	case strings.HasPrefix(value, "~"):
+		return "", errors.New("仅支持当前用户主目录写法 ~ 或 ~/...")
+	case filepath.IsAbs(value):
+		return filepath.Clean(value), nil
 	}
+
+	executable, err := os.Executable()
+	if err == nil {
+		return filepath.Join(filepath.Dir(executable), value), nil
+	}
+	absolute, absErr := filepath.Abs(value)
+	if absErr != nil {
+		return "", fmt.Errorf("解析相对路径失败: %w", absErr)
+	}
+	return absolute, nil
 }
 
-func home() (string, error) {
-	u, err := user.Current()
-	if nil == err {
-		return u.HomeDir, nil
-	}
-
-	// cross compile support
-
-	if "windows" == runtime.GOOS {
-		return homeWindows()
-	}
-
-	// Unix-like system, so just assume Unix
-	return homeUnix()
-}
-
-func homeUnix() (string, error) {
-	// First prefer the HOME environmental variable
-	if home := os.Getenv("HOME"); home != "" {
-		return home, nil
-	}
-
-	// If that fails, try the shell
-	var stdout bytes.Buffer
-	cmd := exec.Command("sh", "-c", "eval echo ~$USER")
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return "", err
-	}
-
-	result := strings.TrimSpace(stdout.String())
-	if result == "" {
-		return "", errors.New("blank output when reading home directory")
-	}
-
-	return result, nil
-}
-
-func homeWindows() (string, error) {
-	drive := os.Getenv("HOMEDRIVE")
-	path := os.Getenv("HOMEPATH")
-	home := drive + path
-	if drive == "" || path == "" {
-		home = os.Getenv("USERPROFILE")
-	}
-	if home == "" {
-		return "", errors.New("HOMEDRIVE, HOMEPATH, and USERPROFILE are blank")
-	}
-
-	return home, nil
-}
-
-// 判断文件是否存在
+// FileIsExists 判断文件是否存在。不存在不是异常，其他访问错误会返回给调用方。
 func FileIsExists(file string) (bool, error) {
 	file, err := ParsePath(file)
 	if err != nil {
@@ -91,14 +49,11 @@ func FileIsExists(file string) (bool, error) {
 	}
 
 	_, err = os.Stat(file)
-	if err != nil {
-		return false, err
-		//if os.IsNotExist(err) {
-		//	return false, err
-		//} else {
-		//	// unknown error
-		//}
+	if err == nil {
+		return true, nil
 	}
-
-	return true, nil
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }

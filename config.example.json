@@ -6,7 +6,7 @@
     "ServerAliveCountMax": 3,
     "TCPKeepAlive": true,
     "Compression": true,
-    "StrictHostKeyChecking": false
+    "StrictHostKeyChecking": true
   },
   "servers": [
     {

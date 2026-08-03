@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          check-latest: false
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Test
+        run: go test ./... -count=1
+
+      - name: Detect races
+        run: go test -race ./... -count=1
+
+      - name: Static checks
+        run: go vet ./...
+
+      - name: Build
+        run: go build -trimpath -o /tmp/autossh ./src/main

@@ -1,20 +1,53 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-cd $(dirname $0)
+set -euo pipefail
+umask 077
 
-mkdir -p ~/.autossh/
-cp -f ./autossh ~/.autossh/
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+install_dir="${HOME:?HOME 环境变量未设置}/.autossh"
+binary_source="$script_dir/autossh"
+config_source="$script_dir/config.json"
+binary_target="$install_dir/autossh"
+config_target="$install_dir/config.json"
 
-CONFIG_FILE=`cd ~/.autossh/ && pwd`/config.json
-if [[ ! -f ${CONFIG_FILE} ]]; then
-    cp ./config.json ~/.autossh/
+die() {
+	echo "安装失败: $*" >&2
+	exit 1
+}
+
+[[ -f "$binary_source" ]] || die "未找到程序文件: $binary_source"
+[[ -f "$config_source" ]] || die "未找到示例配置: $config_source"
+
+mkdir -p "$install_dir"
+chmod 700 "$install_dir"
+install -m 700 "$binary_source" "$binary_target"
+
+if [[ ! -f "$config_target" ]]; then
+	install -m 600 "$config_source" "$config_target"
+else
+	# 配置可能包含密码或私钥路径，保留用户内容但收紧已有文件权限。
+	chmod 600 "$config_target"
 fi
 
-HAS_ALIAS=`cat ~/.bash_profile | grep autossh | wc -l`
-if [[ ${HAS_ALIAS} -eq 0 ]]; then
-    echo "export PATH=$PATH:~/.autossh/" >> ~/.bash_profile
+case "${SHELL:-}" in
+	*/zsh) shell_rc="$HOME/.zshrc" ;;
+	*/bash)
+		if [[ -f "$HOME/.bash_profile" ]]; then
+			shell_rc="$HOME/.bash_profile"
+		else
+			shell_rc="$HOME/.bashrc"
+		fi
+		;;
+	*) shell_rc="$HOME/.profile" ;;
+esac
+
+path_entry='export PATH="$HOME/.autossh:$PATH"'
+touch "$shell_rc"
+if ! grep -Fqx "$path_entry" "$shell_rc"; then
+	printf '\n# autossh\n%s\n' "$path_entry" >> "$shell_rc"
 fi
 
-source ~/.bash_profile
-
-~/.autossh/autossh
+echo "安装完成：$binary_target"
+echo "配置文件：$config_target"
+echo "请重新打开终端，或执行：export PATH=\"$install_dir:\$PATH\""
+echo "随后运行：autossh"

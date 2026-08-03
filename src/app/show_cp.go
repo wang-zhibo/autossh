@@ -9,12 +9,12 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/pkg/errors"
-	"github.com/pkg/sftp"
 )
 
 type ResType int
@@ -39,6 +39,8 @@ type Cp struct {
 	target  *TransferObject
 }
 
+var transferSequence atomic.Uint64
+
 // 复制
 func showCp(configFile string, args []string) {
 	var err error
@@ -58,40 +60,45 @@ func showCp(configFile string, args []string) {
 	if cp.target.server == nil {
 		dstIoClient = new(LocalIOClient)
 	} else {
-		sftpClient, err := cp.target.server.GetSftpClient()
+		sftpConnection, err := cp.target.server.GetSftpClient()
 		if err != nil {
 			utils.Errorln(err)
 			return
 		}
 
 		defer func() {
-			_ = sftpClient.Close()
+			_ = sftpConnection.Close()
 		}()
 
-		c := SftpIOClient{SftpClient: sftpClient}
+		c := SftpIOClient{SftpClient: sftpConnection.Client}
 		dstIoClient = &c
+	}
+
+	if err := cp.prepareTarget(dstIoClient); err != nil {
+		utils.Errorln(err)
+		return
 	}
 
 	for _, source := range cp.sources {
 		var srcIoClient IOClient
-		var sftpClient *sftp.Client
+		var sftpConnection *SftpConnection
 
 		if source.server == nil {
 			srcIoClient = new(LocalIOClient)
 		} else {
-			sftpClient, err := source.server.GetSftpClient()
+			sftpConnection, err = source.server.GetSftpClient()
 			if err != nil {
 				cp.printFileError(source.path, err)
 				continue
 			}
 
-			srcIoClient = &SftpIOClient{SftpClient: sftpClient}
+			srcIoClient = &SftpIOClient{SftpClient: sftpConnection.Client}
 		}
 
 		func() {
 			defer func() {
-				if sftpClient != nil {
-					_ = sftpClient.Close()
+				if sftpConnection != nil {
+					_ = sftpConnection.Close()
 				}
 			}()
 
@@ -100,6 +107,30 @@ func showCp(configFile string, args []string) {
 			}
 		}()
 	}
+}
+
+func (cp *Cp) prepareTarget(dstIO IOClient) error {
+	if len(cp.sources) < 2 {
+		return nil
+	}
+
+	info, err := dstIO.Stat(cp.target.path)
+	if err == nil {
+		if !info.IsDir() {
+			return errors.New("复制多个源时，目标必须是目录")
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("读取目标路径失败: %w", err)
+	}
+	if !cp.isDir {
+		return errors.New("复制多个源时，目标目录必须已存在；使用 -r 可自动创建目录")
+	}
+	if err := dstIO.MkdirAll(cp.target.path); err != nil {
+		return fmt.Errorf("创建目标目录失败: %w", err)
+	}
+	return nil
 }
 
 // 解析参数
@@ -115,7 +146,7 @@ func (cp *Cp) parse(args []string) error {
 	length := len(restArgs)
 	var err error
 
-	if len(restArgs) < 1 {
+	if len(restArgs) < 2 {
 		return errors.New("请输入完整参数")
 	}
 
@@ -141,25 +172,24 @@ func (cp *Cp) parse(args []string) error {
 	return nil
 }
 
-// IO复制 src -> dst
-func (cp *Cp) ioCopy(srcIO IOClient, dstIO IOClient, srcFile FileLike, dst string) (string, error) {
-	var err error
-
-	dst, err = cp.parseDstFilename(dstIO, srcFile.Name(), dst)
+// ioCopy 将打开的源文件写入确定的目标文件名。内容先写入同目录临时文件，
+// 传输完整后再重命名，失败时删除临时文件，避免破坏已有目标文件。
+func (cp *Cp) ioCopy(dstIO IOClient, srcFile FileLike, dst string) (string, error) {
+	temporaryDst := fmt.Sprintf("%s.autossh-part-%d-%d", dst, os.Getpid(), transferSequence.Add(1))
+	dstFile, err := dstIO.Create(temporaryDst)
 	if err != nil {
 		return dst, err
 	}
 
-	dstFile, err := dstIO.Create(dst)
-	if err != nil {
-		return dst, err
-	}
-
+	completed := false
 	defer func() {
 		_ = dstFile.Close()
+		if !completed {
+			_ = dstIO.Remove(temporaryDst)
+		}
 	}()
 
-	bytesCount := 0
+	var bytesCount int64
 	filename := path.Base(srcFile.Name())
 	startTime := time.Now()
 	lastPrint := time.Now()
@@ -177,24 +207,41 @@ func (cp *Cp) ioCopy(srcIO IOClient, dstIO IOClient, srcFile FileLike, dst strin
 			return srcFile.Name(), err
 		}
 
-		wn, err := dstFile.Write(bytes[:n])
-		if err != nil {
-			return cp.target.path, err
-		}
-		bytesCount += wn
-		process := float64(bytesCount) / float64(srcFileInfo.Size()) * 100
-		speed := float64(bytesCount) / time.Since(startTime).Seconds()
-		if time.Since(lastPrint) >= time.Second && !eof {
-			cp.printProcess(filename, process, startTime, speed)
-			lastPrint = time.Now()
+		if n > 0 {
+			wn, writeErr := dstFile.Write(bytes[:n])
+			if writeErr != nil {
+				return srcFile.Name(), writeErr
+			}
+			if wn != n {
+				return srcFile.Name(), io.ErrShortWrite
+			}
+			bytesCount += int64(wn)
+
+			process := 100.0
+			if size := srcFileInfo.Size(); size > 0 {
+				process = float64(bytesCount) / float64(size) * 100
+			}
+			speed := float64(bytesCount) / time.Since(startTime).Seconds()
+			if time.Since(lastPrint) >= time.Second && !eof {
+				cp.printProcess(filename, process, startTime, speed)
+				lastPrint = time.Now()
+			}
 		}
 
 		if eof {
+			speed := float64(bytesCount) / time.Since(startTime).Seconds()
 			cp.printProcess(filename, 100.0, startTime, speed)
 			break
 		}
 	}
 
+	if err := dstFile.Close(); err != nil {
+		return srcFile.Name(), err
+	}
+	if err := dstIO.Rename(temporaryDst, dst); err != nil {
+		return srcFile.Name(), fmt.Errorf("提交传输文件失败: %w", err)
+	}
+	completed = true
 	fmt.Println("")
 	return "", nil
 }
@@ -202,85 +249,111 @@ func (cp *Cp) ioCopy(srcIO IOClient, dstIO IOClient, srcFile FileLike, dst strin
 // 传输
 // 上传时，src = 本地，dst = 远程
 // 下载时，src = 远程，dst = 本地
-func (cp *Cp) transferNew(srcIO IOClient, dstIO IOClient, src string, dst string, vPath string) (string, error) {
+func (cp *Cp) transferNew(srcIO IOClient, dstIO IOClient, src string, dst string, _ string) (string, error) {
+	srcInfo, err := srcIO.Lstat(src)
+	if err != nil {
+		return src, err
+	}
+	if srcInfo.Mode()&os.ModeSymlink != 0 {
+		return src, errors.New("不支持复制符号链接")
+	}
+
+	if srcInfo.IsDir() {
+		if !cp.isDir {
+			return src, errors.New("是一个目录")
+		}
+		dstDir, err := cp.resolveDestinationDirectory(dstIO, dst)
+		if err != nil {
+			return dst, err
+		}
+		return cp.copyDirectoryContents(srcIO, dstIO, src, dstDir)
+	}
+
+	dstFile, err := cp.resolveDestinationFile(dstIO, srcInfo.Name(), dst)
+	if err != nil {
+		return dst, err
+	}
+	return cp.copyFile(srcIO, dstIO, src, dstFile)
+}
+
+func (cp *Cp) copyDirectoryContents(srcIO IOClient, dstIO IOClient, srcDir string, dstDir string) (string, error) {
+	childFiles, err := srcIO.ReadDir(srcDir)
+	if err != nil {
+		return srcDir, err
+	}
+	for _, childFile := range childFiles {
+		if file, err := cp.copyPath(srcIO, dstIO, path.Join(srcDir, childFile.Name()), path.Join(dstDir, childFile.Name())); err != nil {
+			return file, err
+		}
+	}
+	return "", nil
+}
+
+func (cp *Cp) copyPath(srcIO IOClient, dstIO IOClient, src string, dst string) (string, error) {
+	srcInfo, err := srcIO.Lstat(src)
+	if err != nil {
+		return src, err
+	}
+	if srcInfo.Mode()&os.ModeSymlink != 0 {
+		return src, errors.New("不支持复制符号链接")
+	}
+	if srcInfo.IsDir() {
+		if err := dstIO.MkdirAll(dst); err != nil {
+			return dst, fmt.Errorf("创建目录失败: %w", err)
+		}
+		return cp.copyDirectoryContents(srcIO, dstIO, src, dst)
+	}
+	return cp.copyFile(srcIO, dstIO, src, dst)
+}
+
+func (cp *Cp) copyFile(srcIO IOClient, dstIO IOClient, src string, dst string) (string, error) {
 	srcFile, err := srcIO.Open(src)
 	if err != nil {
 		return src, err
 	}
+	defer func() { _ = srcFile.Close() }()
 
-	defer func() {
-		_ = srcFile.Close()
-	}()
-
-	srcFileInfo, err := srcFile.Stat()
-	if err != nil {
+	if _, err := srcFile.Stat(); err != nil {
 		return srcFile.Name(), err
 	}
-
-	if srcFileInfo.IsDir() {
-		if !cp.isDir {
-			return src, errors.New("是一个目录")
-		}
-
-		childFiles, err := srcIO.ReadDir(srcFile.Name())
-		if err != nil {
-			return srcFile.Name(), err
-		}
-
-		if vPath == "" {
-			vPath = string(os.PathSeparator)
-		} else {
-			vPath = path.Join(vPath, srcFileInfo.Name())
-		}
-
-		for _, childFile := range childFiles {
-			childFilename := path.Join(src, childFile.Name())
-			if str, err := cp.transferNew(srcIO, dstIO, childFilename, dst, vPath); err != nil {
-				cp.printFileError(str, err)
-			}
-		}
-	} else {
-		newDst := path.Join(dst, vPath)
-		if file, err := cp.ioCopy(srcIO, dstIO, srcFile, newDst); err != nil {
-			return file, err
-		}
-	}
-
-	return "", nil
+	return cp.ioCopy(dstIO, srcFile, dst)
 }
 
-// 解析dst文件名
-// src = /root/example.txt dst = /root/ => /root/example.txt
-// src = /root/example.txt dst = /root => /root/example.txt
-// src = /root/example.txt dst = /root/new-name.txt => /root/new-name.txt
-func (cp *Cp) parseDstFilename(client IOClient, src string, dst string) (string, error) {
-	dstFileInfo, err := client.Stat(dst)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return dst, err
+func (cp *Cp) resolveDestinationDirectory(dstIO IOClient, dst string) (string, error) {
+	info, err := dstIO.Stat(dst)
+	if err == nil {
+		if !info.IsDir() {
+			return dst, errors.New("目标路径不是目录")
 		}
+		return dst, nil
+	}
+	if !os.IsNotExist(err) {
+		return dst, err
+	}
+	if err := dstIO.MkdirAll(dst); err != nil {
+		return dst, err
+	}
+	return dst, nil
+}
 
-		if cp.isDir {
-			if err := client.Mkdir(dst); err != nil {
-				return dst, err
-			}
-
-			dst = path.Join(dst, path.Base(src))
-		} else {
-			var p = path.Dir(dst)
-			if _, err = client.Stat(p); err != nil {
-				return dst, err
-			}
-
-			dst = path.Join(path.Dir(dst), path.Base(dst))
+func (cp *Cp) resolveDestinationFile(dstIO IOClient, srcName string, dst string) (string, error) {
+	info, err := dstIO.Stat(dst)
+	if err == nil {
+		if info.IsDir() {
+			return path.Join(dst, srcName), nil
 		}
-
-	} else {
-		if dstFileInfo.IsDir() {
-			dst = path.Join(dst, path.Base(src))
-		}
+		return dst, nil
+	}
+	if !os.IsNotExist(err) {
+		return dst, err
 	}
 
+	parent := path.Dir(dst)
+	if parent != "." && parent != "/" {
+		if err := dstIO.MkdirAll(parent); err != nil {
+			return dst, err
+		}
+	}
 	return dst, nil
 }
 
@@ -328,14 +401,21 @@ func newTransferObject(cfg *Config, raw string) (*TransferObject, error) {
 		raw: raw,
 	}
 
-	args := strings.Split(raw, ":")
+	args := strings.SplitN(raw, ":", 2)
 	switch len(args) {
 	case 1:
+		if strings.TrimSpace(args[0]) == "" {
+			return nil, errors.New("本地路径不能为空")
+		}
 		obj.resType = ResTypeSrc
 		obj.path = args[0]
 	case 2:
 		obj.path = strings.TrimSpace(args[1])
-		serverIndex, exists := cfg.serverIndex[args[0]]
+		if obj.path == "" {
+			return nil, errors.New("远程路径不能为空")
+		}
+		serverName := normalizeLookupKey(args[0])
+		serverIndex, exists := cfg.serverIndex[serverName]
 		if !exists {
 			return nil, errors.New("服务器" + args[0] + "不存在")
 		}
